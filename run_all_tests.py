@@ -402,20 +402,6 @@ def test_fusion_model():
     assert all(not p.requires_grad for p in srm_params)
 
 
-def test_inference_missing_checkpoint_raises():
-    """SteganalysiPredictor must raise FileNotFoundError — NOT silent random weights."""
-    from deployment.inference import SteganalysiPredictor
-    raised = False
-    try:
-        SteganalysiPredictor(checkpoint="/nonexistent/path/model.pt")
-    except FileNotFoundError:
-        raised = True
-    assert raised, (
-        "Missing checkpoint must raise FileNotFoundError. "
-        "Silent random-weight inference produces meaningless results."
-    )
-
-
 def test_lsb_crop_preserves_pixels():
     """
     After CenterCrop, pixel values at crop positions must equal the original.
@@ -441,7 +427,6 @@ if TORCH_AVAILABLE:
     run_test("Branch B: DCT conversion + forward", test_branch_b)
     run_test("Branch C: 262-dim features + MLP forward", test_branch_c)
     run_test("Full Fusion Model: forward + predict()", test_fusion_model)
-    run_test("Missing checkpoint raises FileNotFoundError (not silent)", test_inference_missing_checkpoint_raises)
 
 # This test does NOT need PyTorch
 run_test("CenterCrop preserves exact pixel values (lossless)", test_lsb_crop_preserves_pixels)

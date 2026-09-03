@@ -342,7 +342,8 @@ def main():
         clean_dir=cfg.clean_dir,
         stego_dir=cfg.stego_dir,
         batch_size=cfg.batch_size,
-        image_size=cfg.image_size,
+        crop_size=cfg.image_size,      # crop_size, NOT image_size (lossless crop, not resize)
+        val_split=cfg.val_split,
         max_images=args.max_images,
     )
 
