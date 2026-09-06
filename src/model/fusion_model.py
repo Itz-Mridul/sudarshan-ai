@@ -127,6 +127,11 @@ class MultiBranchSteganalyzer(nn.Module):
         # ── Fusion Layer ──────────────────────────────────────────────────────
         fusion_input = feature_dim_a + feature_dim_b + feature_dim_c
         self.fusion = FusionLayer(input_dim=fusion_input, num_classes=num_classes)
+        
+        # ── Layer Norms (CRITICAL) ────────────────────────────────────────────
+        self.norm_a = nn.LayerNorm(feature_dim_a)
+        self.norm_b = nn.LayerNorm(feature_dim_b)
+        self.norm_c = nn.LayerNorm(feature_dim_c)
 
         # Store dims for reference
         self.feature_dim_a = feature_dim_a
@@ -175,12 +180,12 @@ class MultiBranchSteganalyzer(nn.Module):
         stat_tensor = self._get_branch_c_features(x)    # (batch, 262)
         feat_c = self.branch_c(stat_tensor)              # (batch, 32)
 
-        # ── L2 Normalization (CRITICAL!) ──────────────────────────────────────
-        # Without this, Branch A (256-dim) will dominate Branch C (32-dim)
-        # and fusion training may never converge.
-        feat_a_norm = F.normalize(feat_a, p=2, dim=1)   # (batch, 256)
-        feat_b_norm = F.normalize(feat_b, p=2, dim=1)   # (batch, 256)
-        feat_c_norm = F.normalize(feat_c, p=2, dim=1)   # (batch, 32)
+        # ── Layer Normalization (CRITICAL!) ───────────────────────────────────
+        # Using LayerNorm instead of L2 normalization to prevent NaN errors 
+        # under Mixed Precision (AMP) and to ensure stable branch fusion.
+        feat_a_norm = self.norm_a(feat_a)               # (batch, 256)
+        feat_b_norm = self.norm_b(feat_b)               # (batch, 256)
+        feat_c_norm = self.norm_c(feat_c)               # (batch, 32)
 
         # ── Concatenate ───────────────────────────────────────────────────────
         combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm], dim=1)
