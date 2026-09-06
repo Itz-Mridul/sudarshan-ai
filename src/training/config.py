@@ -73,6 +73,8 @@ class Config:
         import torch
         if self.use_gpu and torch.cuda.is_available():
             return torch.device("cuda")
+        if self.use_gpu and torch.backends.mps.is_available():
+            return torch.device("mps")   # Apple Silicon GPU
         return torch.device("cpu")
 
     @property
@@ -81,11 +83,18 @@ class Config:
         return self.feature_dim_a + self.feature_dim_b + self.feature_dim_c
 
     def summary(self):
+        dev = self.device
+        dev_label = str(dev)
+        if dev.type == "mps":
+            dev_label = "mps (Apple Silicon GPU)"
+        elif dev.type == "cuda":
+            import torch
+            dev_label = f"cuda ({torch.cuda.get_device_name(0)})"
         print("=" * 50)
         print("Training Configuration")
         print("=" * 50)
         print(f"Mode:           {self.mode}")
-        print(f"Device:         {self.device}")
+        print(f"Device:         {dev_label}")
         print(f"Image size:     {self.image_size}×{self.image_size}")
         print(f"Batch size:     {self.batch_size}")
         print(f"Epochs:         {self.epochs}")

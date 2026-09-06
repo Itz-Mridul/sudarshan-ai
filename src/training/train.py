@@ -264,7 +264,7 @@ def train(cfg: Config):
         # No warmup — just cosine from epoch 1
         scheduler = CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=1e-6)
 
-    # ── Mixed Precision (GPU only) ────────────────────────────────────────────
+    # ── Mixed Precision (CUDA only — MPS uses float32) ───────────────────────
     scaler = GradScaler() if (cfg.mixed_precision and device.type == "cuda") else None
 
     # ── Training Loop ─────────────────────────────────────────────────────────

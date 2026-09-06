@@ -283,12 +283,16 @@ def get_dataloaders(
         transform=val_transform,
     )
 
+    # pin_memory speeds up CPU→GPU transfers but is NOT supported on MPS
+    import torch
+    use_pin = torch.cuda.is_available()  # True only for NVIDIA GPU
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=use_pin,
         drop_last=True       # drop last incomplete batch for stable BN stats
     )
     val_loader = DataLoader(
@@ -296,7 +300,7 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=use_pin
     )
 
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
