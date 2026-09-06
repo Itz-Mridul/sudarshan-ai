@@ -32,6 +32,7 @@ weights/*.bin
 data/raw/
 data/clean/
 data/stego/
+data/BOSSbase_1.01/
 # Keep folder structure
 !data/raw/.gitkeep
 !data/clean/.gitkeep
