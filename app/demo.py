@@ -66,6 +66,9 @@ def preprocess_image(uploaded_file, image_size: int = 256) -> tuple:
     """
     Convert an uploaded PIL image to a normalised tensor.
 
+    IMPORTANT: Uses CenterCrop (not bilinear resize) to preserve exact pixel
+    values. Bilinear resize averages neighbours and destroys 1-bit LSB signals.
+
     Returns:
         (tensor, pil_img):
             tensor  — shape (1, 1, H, W) — batch of 1 grayscale image
@@ -73,12 +76,25 @@ def preprocess_image(uploaded_file, image_size: int = 256) -> tuple:
     """
     img = Image.open(uploaded_file).convert("L")      # convert to grayscale
     pil_display = img.copy()
-    img = img.resize((image_size, image_size), Image.BILINEAR)
+
+    # Pad small images to at least image_size × image_size before cropping
+    w, h = img.size
+    if w < image_size or h < image_size:
+        pad_w = max(0, image_size - w)
+        pad_h = max(0, image_size - h)
+        import torchvision.transforms.functional as TF
+        img = TF.pad(img, (pad_w // 2, pad_h // 2, pad_w - pad_w // 2, pad_h - pad_h // 2))
+
+    # CenterCrop — lossless, preserves LSB values exactly
+    left   = (img.width  - image_size) // 2
+    top    = (img.height - image_size) // 2
+    img    = img.crop((left, top, left + image_size, top + image_size))
+
     arr = np.array(img, dtype=np.float32) / 255.0     # normalise to [0, 1]
-    # Normalise to [-1, 1] (matches training transforms)
-    arr = (arr - 0.5) / 0.5
+    arr = (arr - 0.5) / 0.5                            # normalise to [-1, 1]
     tensor = torch.tensor(arr).unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
     return tensor, pil_display
+
 
 
 @torch.no_grad()
