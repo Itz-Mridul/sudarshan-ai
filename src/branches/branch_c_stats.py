@@ -210,6 +210,12 @@ def extract_statistical_features(img: np.ndarray) -> np.ndarray:
     skew_val = float(scipy_skew(flat))
     kurt_val = float(scipy_kurtosis(flat))
 
+    # Fix: Replace NaN with 0.0 (happens on flat image patches where std is 0)
+    if np.isnan(skew_val):
+        skew_val = 0.0
+    if np.isnan(kurt_val):
+        kurt_val = 0.0
+
     # Clamp skew and kurtosis to reasonable bounds
     skew_val = np.clip(skew_val, -5.0, 5.0) / 5.0
     kurt_val = np.clip(kurt_val, -5.0, 5.0) / 5.0
