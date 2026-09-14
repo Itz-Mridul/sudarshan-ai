@@ -65,11 +65,18 @@ class FusionLayer(nn.Module):
 
         self.net = nn.Sequential(
             # First dense layer — large to small compression
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.4),
+
+            # Second dense layer
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.3),
 
-            # Second dense layer
+            # Third dense layer
             nn.Linear(128, 64),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
@@ -251,6 +258,11 @@ class MultiBranchSteganalyzer(nn.Module):
             }
             self.branch_a.load_state_dict(backbone_state, strict=False)
             print(f"✅ Branch A weights loaded from {branch_a_path}")
+        elif branch_a_path:
+            raise FileNotFoundError(
+                f"Branch A checkpoint not found: {branch_a_path}\n"
+                "Train Branch A first: python src/training/train.py --mode branch_a"
+            )
 
         if branch_b_path and os.path.exists(branch_b_path):
             state = torch.load(branch_b_path, map_location="cpu")
@@ -261,6 +273,11 @@ class MultiBranchSteganalyzer(nn.Module):
             }
             self.branch_b.load_state_dict(backbone_state, strict=False)
             print(f"✅ Branch B weights loaded from {branch_b_path}")
+        elif branch_b_path:
+            raise FileNotFoundError(
+                f"Branch B checkpoint not found: {branch_b_path}\n"
+                "Train Branch B first: python src/training/train.py --mode branch_b"
+            )
 
         if branch_c_path and os.path.exists(branch_c_path):
             state = torch.load(branch_c_path, map_location="cpu")
@@ -271,6 +288,12 @@ class MultiBranchSteganalyzer(nn.Module):
             }
             self.branch_c.load_state_dict(backbone_state, strict=False)
             print(f"✅ Branch C weights loaded from {branch_c_path}")
+        elif branch_c_path:
+            raise FileNotFoundError(
+                f"Branch C checkpoint not found: {branch_c_path}\n"
+                "Train Branch C first: python src/training/train.py --mode branch_c"
+            )
+
 
 
 # ─── Quick Test ───────────────────────────────────────────────────────────────

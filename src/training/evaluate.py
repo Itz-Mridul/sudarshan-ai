@@ -48,7 +48,7 @@ from sklearn.metrics import (
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from training.config import Config
-from data_pipeline.dataset import get_dataloaders
+from data_pipeline.dataset import get_dataloaders, FlatDataset, split_stems_three_way, get_transforms
 from branches.branch_a_pixel import BranchAClassifier
 from branches.branch_b_dct import BranchBClassifier
 from branches.branch_c_stats import BranchCClassifier
@@ -97,8 +97,11 @@ def run_inference(model, loader, device: torch.device):
 
     all_labels, all_preds, all_stego_probs = [], [], []
 
-    for images, labels in loader:
-        images = images.to(device)
+    for clean_imgs, stego_imgs in loader:
+        B = clean_imgs.size(0)
+        images = torch.cat([clean_imgs, stego_imgs], dim=0).to(device)
+        labels = torch.cat([torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)], dim=0)
+
         logits = model(images)
         probs  = F.softmax(logits, dim=1)
 
@@ -121,18 +124,24 @@ def run_inference(model, loader, device: torch.device):
 
 def compute_metrics(labels: np.ndarray, preds: np.ndarray, stego_probs: np.ndarray) -> dict:
     """
-    Compute all evaluation metrics.
+    Compute all evaluation metrics for the paper.
+    Includes: Accuracy, Precision, Recall, F1, AUC, FPR, FNR.
     """
     acc       = accuracy_score(labels, preds) * 100
     precision = precision_score(labels, preds, average="binary", zero_division=0) * 100
     recall    = recall_score(labels, preds, average="binary", zero_division=0) * 100
     f1        = f1_score(labels, preds, average="binary", zero_division=0) * 100
 
-    fpr, tpr, _ = roc_curve(labels, stego_probs)
-    roc_auc     = auc(fpr, tpr) * 100
+    fpr_curve, tpr_curve, _ = roc_curve(labels, stego_probs)
+    roc_auc                  = auc(fpr_curve, tpr_curve) * 100
 
     cm = confusion_matrix(labels, preds)
     tn, fp, fn, tp = cm.ravel()
+
+    # False Positive Rate = FP / (FP + TN) = fraction of clean flagged as stego
+    fpr_rate = fp / (fp + tn) * 100 if (fp + tn) > 0 else 0.0
+    # False Negative Rate = FN / (FN + TP) = fraction of stego missed
+    fnr_rate = fn / (fn + tp) * 100 if (fn + tp) > 0 else 0.0
 
     return {
         "accuracy":  acc,
@@ -140,29 +149,94 @@ def compute_metrics(labels: np.ndarray, preds: np.ndarray, stego_probs: np.ndarr
         "recall":    recall,
         "f1":        f1,
         "auc":       roc_auc,
+        "fpr_rate":  fpr_rate,   # false positive rate (%)
+        "fnr_rate":  fnr_rate,   # false negative rate (%)
         "tp": int(tp), "tn": int(tn),
         "fp": int(fp), "fn": int(fn),
-        "fpr": fpr.tolist(),
-        "tpr": tpr.tolist(),
+        "fpr": fpr_curve.tolist(),
+        "tpr": tpr_curve.tolist(),
         "confusion_matrix": cm.tolist()
     }
 
 
 def print_metrics(metrics: dict, model_name: str = "Model"):
-    """Print metrics table."""
-    print(f"\n{'=' * 50}")
+    """Print full metrics table for the paper."""
+    print(f"\n{'=' * 55}")
     print(f"  Results: {model_name}")
-    print(f"{'=' * 50}")
-    print(f"  Accuracy:  {metrics['accuracy']:.2f}%")
-    print(f"  Precision: {metrics['precision']:.2f}%")
-    print(f"  Recall:    {metrics['recall']:.2f}%")
-    print(f"  F1-Score:  {metrics['f1']:.2f}%")
-    print(f"  AUC:       {metrics['auc']:.2f}%")
+    print(f"{'=' * 55}")
+    print(f"  Accuracy:         {metrics['accuracy']:.2f}%")
+    print(f"  Precision:        {metrics['precision']:.2f}%")
+    print(f"  Recall (TPR):     {metrics['recall']:.2f}%")
+    print(f"  F1-Score:         {metrics['f1']:.2f}%")
+    print(f"  ROC-AUC:          {metrics['auc']:.2f}%")
+    print(f"  False Pos. Rate:  {metrics['fpr_rate']:.2f}%  (clean flagged as stego)")
+    print(f"  False Neg. Rate:  {metrics['fnr_rate']:.2f}%  (stego missed)")
     print(f"\n  Confusion Matrix:")
     print(f"             Predicted Clean  Predicted Stego")
     print(f"  True Clean     {metrics['tn']:5d}            {metrics['fp']:5d}")
     print(f"  True Stego     {metrics['fn']:5d}            {metrics['tp']:5d}")
-    print(f"{'=' * 50}")
+    print(f"{'=' * 55}")
+
+
+# ─── Multi-Crop Inference ─────────────────────────────────────────────────────
+
+@torch.no_grad()
+def multi_crop_inference(
+    model,
+    image_paths: list,
+    labels: list,
+    n_crops: int = 10,
+    crop_size: int = 256,
+    device: torch.device = None
+) -> dict:
+    """
+    Run n_crops random crops per image and average the stego probabilities.
+    Aggregating multiple crops per image improves accuracy on borderline cases.
+
+    Args:
+        model      : trained model in eval mode
+        image_paths: list of absolute image paths
+        labels     : corresponding ground-truth labels (0=clean, 1=stego)
+        n_crops    : number of random crops per image
+        crop_size  : spatial size of each crop
+        device     : torch device (auto-detected if None)
+
+    Returns:
+        dict with accuracy, f1, auc computed on the multi-crop predictions
+    """
+    import torchvision.transforms as T
+    from PIL import Image as PILImage
+
+    if device is None:
+        device = next(model.parameters()).device
+
+    model.to(device)
+    model.eval()
+
+    rand_crop = T.RandomCrop(crop_size)
+    to_tensor = T.Compose([T.ToTensor(), T.Normalize([0.5], [0.5])])
+
+    all_labels, all_probs = [], []
+
+    for path, label in zip(image_paths, labels):
+        img = PILImage.open(path).convert("L")
+        crop_probs = []
+        for _ in range(n_crops):
+            crop = rand_crop(img)
+            t = to_tensor(crop).unsqueeze(0).to(device)
+            logits = model(t)
+            prob_stego = torch.softmax(logits, dim=1)[0, 1].item()
+            crop_probs.append(prob_stego)
+        avg_prob = float(np.mean(crop_probs))
+        all_labels.append(label)
+        all_probs.append(avg_prob)
+
+    all_preds  = [1 if p >= 0.5 else 0 for p in all_probs]
+    return compute_metrics(
+        np.array(all_labels),
+        np.array(all_preds),
+        np.array(all_probs)
+    )
 
 
 # ─── Plotting Functions ───────────────────────────────────────────────────────
@@ -333,17 +407,20 @@ def main():
     parser.add_argument("--history", type=str,
                         help="Path to training history JSON to plot")
     parser.add_argument("--max_images", type=int, default=None)
+    parser.add_argument("--multicrop", action="store_true",
+                        help="Use multi-crop inference (averages 10 crops per image)")
     args = parser.parse_args()
 
     cfg = Config()
 
     # Data loaders
-    _, val_loader = get_dataloaders(
+    _, _, test_loader = get_dataloaders(
         clean_dir=cfg.clean_dir,
         stego_dir=cfg.stego_dir,
         batch_size=cfg.batch_size,
         crop_size=cfg.image_size,      # crop_size, NOT image_size (lossless crop, not resize)
         val_split=cfg.val_split,
+        test_split=cfg.test_split,
         max_images=args.max_images,
     )
 
@@ -352,14 +429,41 @@ def main():
 
     if args.ablation:
         # Run full ablation study
-        ablation_results = run_ablation_study(cfg, val_loader)
+        ablation_results = run_ablation_study(cfg, test_loader)
         all_results.update(ablation_results)
     elif args.checkpoint:
-        # Evaluate a single model
+        # Single model evaluation
+        print(f"\nEvaluating single model: {args.checkpoint}")
         model = load_model(args.checkpoint, args.mode, cfg)
-        labels, preds, stego_probs = run_inference(model, val_loader, cfg.device)
-        metrics = compute_metrics(labels, preds, stego_probs)
-        model_name = f"{args.mode.upper()} Model"
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        
+        if args.multicrop:
+            print("  Running multi-crop inference (10 crops/image)...")
+            # Extract paths and labels from test dataset
+            ds = test_loader.dataset
+            paths = [s[0] for s in ds.samples] if hasattr(ds, 'samples') else []
+            # Wait, test_loader uses SteganalysisDataset which isn't flat. 
+            # We can reconstruct a flat list from clean_dir and stego_dir for test_stems
+            from data_pipeline.dataset import split_stems_three_way
+            _, _, test_stems = split_stems_three_way(cfg.clean_dir, cfg.stego_dir, val_split=cfg.val_split, test_split=cfg.test_split, max_images=args.max_images, seed=cfg.seed)
+            paths, gt_labels = [], []
+            for stem in test_stems:
+                # Clean might be .pgm or .png
+                clean_path = os.path.join(cfg.clean_dir, f"{stem}.pgm")
+                if not os.path.exists(clean_path):
+                    clean_path = os.path.join(cfg.clean_dir, f"{stem}.png")
+                paths.append(clean_path)
+                gt_labels.append(0)
+                
+                # Stego is always .png (lossless)
+                paths.append(os.path.join(cfg.stego_dir, f"{stem}.png"))
+                gt_labels.append(1)
+            metrics = multi_crop_inference(model, paths, gt_labels, device=device)
+        else:
+            labels, preds, stego_probs = run_inference(model, test_loader, device=device)
+            metrics = compute_metrics(labels, preds, stego_probs)
+            
+        model_name = f"{args.mode.upper()} Model{' (Multi-Crop)' if args.multicrop else ''}"
         print_metrics(metrics, model_name)
 
         plot_confusion_matrix(

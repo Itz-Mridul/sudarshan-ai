@@ -28,6 +28,7 @@ STUDENT A TASK: Run this to create your stego dataset (Week 2-3).
 import os
 import random
 import argparse
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -37,19 +38,29 @@ from PIL import Image
 
 # ─── Core LSB Functions ──────────────────────────────────────────────────────
 
-def embed_lsb(image: np.ndarray, payload: bytes) -> np.ndarray:
+def embed_lsb(
+    image: np.ndarray,
+    payload: bytes,
+    seed: Optional[int] = None
+) -> np.ndarray:
     """
     Embed payload bytes into an image using LSB steganography.
 
-    How it works step by step:
-      1. Convert each byte of payload into 8 individual bits.
-      2. For each pixel in the image (flattened), take the last bit of the
-         pixel value and replace it with the next payload bit.
-      3. Rebuild the image from the modified pixels.
+    CRITICAL FIX (v2): Payload is spread across ALL pixels using a seeded
+    pseudo-random permutation. The old sequential approach (pixels 0,1,2...)
+    concentrated the stego signal in the top rows of the image, making it
+    invisible to center-crop-based validation and training.
+
+    With permutation embedding:
+      - The signal is uniform across the ENTIRE image.
+      - Any crop will contain a representative fraction of the payload.
+      - More realistic (real tools like S-UNIWARD also spread signal uniformly).
 
     Args:
         image   : numpy array of shape (H, W) for grayscale or (H, W, C) for RGB
         payload : bytes to hide inside the image
+        seed    : RNG seed for the permutation (must match extract_lsb call!)
+                  Default None = use payload length as seed (deterministic per image).
 
     Returns:
         Modified numpy array (same shape) with payload hidden inside.
@@ -58,6 +69,7 @@ def embed_lsb(image: np.ndarray, payload: bytes) -> np.ndarray:
         ValueError: if payload is too large to fit in this image.
     """
     flat = image.flatten().copy()  # work on a flat copy
+    n_pixels = len(flat)
 
     # Convert payload bytes to a list of individual bits
     payload_bits = []
@@ -66,26 +78,39 @@ def embed_lsb(image: np.ndarray, payload: bytes) -> np.ndarray:
             payload_bits.append((byte >> bit_pos) & 1)
 
     # Check capacity: one bit per pixel
-    if len(payload_bits) > len(flat):
+    if len(payload_bits) > n_pixels:
         raise ValueError(
             f"Payload too large: need {len(payload_bits)} bits, "
-            f"but image only has {len(flat)} pixels."
+            f"but image only has {n_pixels} pixels."
         )
 
-    # Replace LSB of each pixel with one payload bit
-    for i, bit in enumerate(payload_bits):
-        flat[i] = (flat[i] & 0xFE) | bit   # clear last bit, set to payload bit
+    # Build a seeded permutation so the payload is spread across ALL pixels
+    # (not just the first N, which would bias toward the top of the image)
+    rng_seed = seed if seed is not None else len(payload_bits)
+    rng = np.random.default_rng(rng_seed)
+    perm = rng.permutation(n_pixels)[:len(payload_bits)]
+
+    # Replace LSB of each selected pixel with one payload bit
+    for idx, bit in zip(perm, payload_bits):
+        flat[idx] = (flat[idx] & 0xFE) | bit   # clear last bit, set to payload bit
 
     return flat.reshape(image.shape)
 
 
-def extract_lsb(image: np.ndarray, payload_length_bytes: int) -> bytes:
+def extract_lsb(
+    image: np.ndarray,
+    payload_length_bytes: int,
+    seed: Optional[int] = None
+) -> bytes:
     """
     Extract hidden payload from a stego image.
+
+    MUST use the same seed that was used during embed_lsb.
 
     Args:
         image               : stego numpy array
         payload_length_bytes: how many bytes were hidden (must match embed call)
+        seed                : same seed used in embed_lsb (default: auto from length)
 
     Returns:
         Extracted bytes payload.
@@ -93,8 +118,13 @@ def extract_lsb(image: np.ndarray, payload_length_bytes: int) -> bytes:
     flat = image.flatten()
     bits_needed = payload_length_bytes * 8
 
-    # Read LSB of first N pixels
-    bits = [int(flat[i]) & 1 for i in range(bits_needed)]
+    # Reconstruct the same permutation used during embedding
+    rng_seed = seed if seed is not None else bits_needed
+    rng = np.random.default_rng(rng_seed)
+    perm = rng.permutation(len(flat))[:bits_needed]
+
+    # Read LSB of each selected pixel
+    bits = [int(flat[idx]) & 1 for idx in perm]
 
     # Group bits back into bytes
     extracted = bytearray()
@@ -183,8 +213,12 @@ def create_stego_image(
     # Generate random payload (simulates hidden document)
     payload = bytes([random.randint(0, 255) for _ in range(payload_size_bytes)])
 
-    # Embed via LSB
-    stego_array = embed_lsb(img_array, payload)
+    # Embed via LSB with SHA-256-based seed (stable across Python processes)
+    # hash() is randomised per-process; SHA-256 of the filename is deterministic.
+    basename = os.path.basename(input_path).encode()
+    sha_seed = int(hashlib.sha256(basename).hexdigest(), 16) % (2**31)
+    img_seed = seed if seed is not None else sha_seed
+    stego_array = embed_lsb(img_array, payload, seed=img_seed)
 
     # Save as lossless PNG
     stego_img = Image.fromarray(stego_array.astype(np.uint8))

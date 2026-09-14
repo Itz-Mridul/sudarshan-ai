@@ -1,0 +1,75 @@
+# Copy-paste these cells into Google Colab
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 1: Mount Google Drive and navigate to project
+# ═══════════════════════════════════════════════════════════════
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os, sys
+PROJECT = '/content/drive/MyDrive/EDI_Project'  # ← CHANGE IF NEEDED
+os.chdir(PROJECT)
+print("Working in:", os.getcwd())
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 2: Install dependencies + verify GPU
+# ═══════════════════════════════════════════════════════════════
+
+!pip install -r requirements.txt -q
+import torch
+print(f"PyTorch: {torch.__version__}")
+print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NOT DETECTED — go to Runtime > Change Runtime Type > T4 GPU'}")
+print(f"Clean images: {len(os.listdir('data/clean'))}")
+print(f"Stego images: {len(os.listdir('data/stego'))}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 3: Quick test — verify pipeline before full run (~5 mins)
+# ═══════════════════════════════════════════════════════════════
+
+!python src/training/train.py --mode joint --max_images 200 --epochs 3
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 4: FULL JOINT TRAINING — ~3-4 hours on T4 GPU
+#         Trains all 3 branches + fusion simultaneously
+#         Target: >95% validation accuracy
+# ═══════════════════════════════════════════════════════════════
+
+!python src/training/train.py --mode joint --epochs 80
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 5: Evaluate — generates all paper metrics and figures
+# ═══════════════════════════════════════════════════════════════
+
+!python src/training/evaluate.py --checkpoint weights/fusion_best.pt --mode fusion
+!python src/training/evaluate_payloads.py
+!python generate_paper_figures.py
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 6: Train Xu-Net baseline (for comparison table in paper)
+# ═══════════════════════════════════════════════════════════════
+
+!python src/baselines/xunet_baseline.py --train --epochs 50
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 7: Quantize for CPU deployment (INT8) [DEFERRED]
+#         Skip this step until FP32 model achieves >95% accuracy
+# ═══════════════════════════════════════════════════════════════
+
+# !python src/deploy/quantize.py --model_path weights/fusion_best.pt
+
+
+# ═══════════════════════════════════════════════════════════════
+# CELL 8: Back up weights + results to Google Drive
+# ═══════════════════════════════════════════════════════════════
+
+import shutil
+shutil.make_archive('/content/drive/MyDrive/EDI_weights_backup', 'zip', 'weights/')
+shutil.make_archive('/content/drive/MyDrive/EDI_results_backup', 'zip', 'results/')
+print("✅ Weights and results backed up to Google Drive!")

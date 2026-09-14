@@ -95,7 +95,11 @@ def load_model(checkpoint: str, mode: str, cfg: Config):
 @torch.no_grad()
 def run_inference(model, loader):
     all_labels, all_preds, all_probs = [], [], []
-    for images, labels in loader:
+    for clean_imgs, stego_imgs in loader:
+        B = clean_imgs.size(0)
+        images = torch.cat([clean_imgs, stego_imgs], dim=0)
+        labels = torch.cat([torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)], dim=0)
+        
         logits = model(images)
         probs = F.softmax(logits, dim=1)
         all_labels.extend(labels.numpy())
@@ -255,12 +259,14 @@ def main():
 
     # Load validation data (reuse val split — same seed as training)
     print("Loading validation data...")
-    _, val_loader = get_dataloaders(
+    _, _, test_loader = get_dataloaders(
         clean_dir=cfg.clean_dir,
         stego_dir=cfg.stego_dir,
-        batch_size=64,
+        batch_size=cfg.batch_size,
         crop_size=cfg.image_size,
         val_split=cfg.val_split,
+        test_split=cfg.test_split,
+        max_images=None,
     )
 
     checkpoints = {
@@ -277,7 +283,7 @@ def main():
             continue
         print(f"  Evaluating {name}...")
         model = load_model(ckpt, mode, cfg)
-        labels, preds, probs = run_inference(model, val_loader)
+        labels, preds, probs = run_inference(model, test_loader)
         metrics = compute_metrics(labels, preds, probs)
         results[(name, color_key)] = metrics
         print(f"    Acc={metrics['accuracy']:.1f}%  F1={metrics['f1']:.1f}%  AUC={metrics['auc']:.1f}%")

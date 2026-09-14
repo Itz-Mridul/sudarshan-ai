@@ -166,15 +166,22 @@ def train_xunet(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training Xu-Net Baseline on: {device}")
 
-    # Data
-    train_loader, val_loader = get_dataloaders(
-        clean_dir=clean_dir,
-        stego_dir=stego_dir,
-        batch_size=batch_size,
-        crop_size=256,
-        val_split=0.2,
-        max_images=max_images
+    # Data — use FlatDataset which returns (image, label) instead of (clean, stego)
+    # The shared SteganalysisDataset returns paired batches; XuNet needs flat labels.
+    from data_pipeline.dataset import FlatDataset, split_stems_three_way, get_transforms
+    from torch.utils.data import DataLoader as _DL
+
+    _, val_transform = get_transforms(256)
+    train_transform, _ = get_transforms(256)
+
+    train_stems, val_stems, _ = split_stems_three_way(
+        clean_dir, stego_dir, val_split=0.15, test_split=0.15,
+        max_images=max_images, seed=42
     )
+    train_ds = FlatDataset(clean_dir, stego_dir, allowed_stems=train_stems, transform=train_transform)
+    val_ds   = FlatDataset(clean_dir, stego_dir, allowed_stems=val_stems,   transform=val_transform)
+    train_loader = _DL(train_ds, batch_size=batch_size, shuffle=True,  drop_last=False,  num_workers=4)
+    val_loader   = _DL(val_ds,   batch_size=batch_size, shuffle=False, num_workers=4)
 
     # Model
     model = XuNet(num_classes=2).to(device)
@@ -267,13 +274,20 @@ def evaluate_xunet(
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()
 
-    _, val_loader = get_dataloaders(
-        clean_dir=clean_dir, stego_dir=stego_dir,
-        batch_size=32, crop_size=256, val_split=0.2, max_images=max_images
+    # Use FlatDataset for the held-out test stems
+    from data_pipeline.dataset import FlatDataset, split_stems_three_way, get_transforms
+    from torch.utils.data import DataLoader as _DL
+
+    _, val_transform = get_transforms(256)
+    _, _, test_stems = split_stems_three_way(
+        clean_dir, stego_dir, val_split=0.15, test_split=0.15,
+        max_images=max_images, seed=42
     )
+    test_ds  = FlatDataset(clean_dir, stego_dir, allowed_stems=test_stems, transform=val_transform)
+    test_loader = _DL(test_ds, batch_size=32, shuffle=False, num_workers=4)
 
     all_labels, all_preds, all_probs = [], [], []
-    for images, labels in val_loader:
+    for images, labels in test_loader:
         logits = model(images.to(device))
         probs  = F.softmax(logits, dim=1)
         all_labels.extend(labels.numpy())

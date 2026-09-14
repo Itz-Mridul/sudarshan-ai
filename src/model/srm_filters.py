@@ -154,13 +154,89 @@ def get_srm_filters() -> torch.Tensor:
         # Add 90° rotation
         filters.append(np.rot90(f, 1).copy())
 
-    # Ensure we have exactly 30 filters
-    # (Trim or pad with zeros if needed due to duplicates)
+    # ── Additional fixed SRM-style kernels to reach 30 ───────────────────────
+    # These are the standard linear predictor residuals from the SRM paper
+    # (Fridrich & Kodovsky 2012, Table I). Using fixed kernels here ensures
+    # the filter bank is DETERMINISTIC and reproducible across runs.
+
+    # 3rd order horizontal
+    f3h = np.array([
+        [0,  0,  0,  0,  0],
+        [0,  0,  0,  0,  0],
+        [0, -1,  3, -3,  1],
+        [0,  0,  0,  0,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 3.0
+    filters.append(f3h)
+
+    # 3rd order vertical
+    f3v = np.array([
+        [0,  0, -1,  0,  0],
+        [0,  0,  3,  0,  0],
+        [0,  0, -3,  0,  0],
+        [0,  0,  1,  0,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 3.0
+    filters.append(f3v)
+
+    # 3rd order diagonal (anti-diag)
+    f3d = np.array([
+        [0,  0,  0,  0,  0],
+        [0, -1,  0,  0,  0],
+        [0,  0,  3,  0,  0],
+        [0,  0,  0, -3,  0],
+        [0,  0,  0,  0,  1],
+    ], dtype=np.float32) / 3.0
+    filters.append(f3d)
+
+    # Square 2nd order kernel
+    fsq = np.array([
+        [0,  0,  0,  0,  0],
+        [0, -1,  2, -1,  0],
+        [0,  2, -4,  2,  0],
+        [0, -1,  2, -1,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 4.0
+    filters.append(fsq)
+
+    # Rotations of square 2nd order
+    for rot in [1, 2, 3]:
+        filters.append(np.rot90(fsq * 4.0, rot).copy() / 4.0)
+
+    # 5-point star (2nd order)
+    fstar = np.array([
+        [0,  0,  0,  0,  0],
+        [0,  0, -1,  0,  0],
+        [0, -1,  4, -1,  0],
+        [0,  0, -1,  0,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 4.0
+    filters.append(fstar)
+
+    # Cross 1st order
+    fcr = np.array([
+        [0,  0,  0,  0,  0],
+        [0,  0,  1,  0,  0],
+        [0,  1, -4,  1,  0],
+        [0,  0,  1,  0,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 4.0
+    filters.append(fcr)
+
+    # Diagonal cross
+    fdcr = np.array([
+        [0,  0,  0,  0,  0],
+        [0,  1,  0,  1,  0],
+        [0,  0, -4,  0,  0],
+        [0,  1,  0,  1,  0],
+        [0,  0,  0,  0,  0],
+    ], dtype=np.float32) / 4.0
+    filters.append(fdcr)
+
+    # Ensure we have exactly 30 filters (trim or rotate existing ones)
     while len(filters) < 30:
-        # Add zero-mean random noise filters as placeholders
-        extra = np.random.randn(5, 5).astype(np.float32) * 0.01
-        extra -= extra.mean()
-        filters.append(extra)
+        # Rotate the last kernel and add — still deterministic
+        filters.append(np.rot90(filters[-1], 1).copy())
 
     filters = filters[:30]  # take exactly 30
 

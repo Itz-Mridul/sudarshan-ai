@@ -100,6 +100,25 @@ def image_to_dct_tensor(image_tensor: torch.Tensor) -> torch.Tensor:
     return torch.tensor(dct_array, dtype=torch.float32)
 
 
+# ─── Residual Block ───────────────────────────────────────────────────────────
+
+class ResidualBlock(nn.Module):
+    """Simple residual block for deeper feature extraction."""
+    def __init__(self, channels: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(x + self.block(x))
+
+
 # ─── DCT CNN Model ────────────────────────────────────────────────────────────
 
 class FrequencyCNN(nn.Module):
@@ -138,6 +157,7 @@ class FrequencyCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)          # H/2, W/2
         )
+        self.res1 = ResidualBlock(32)
 
         # Block 2: learn composite frequency patterns
         self.conv2 = nn.Sequential(
@@ -146,6 +166,7 @@ class FrequencyCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)          # H/4, W/4
         )
+        self.res2 = ResidualBlock(64)
 
         # Block 3: learn stego-specific frequency anomalies
         self.conv3 = nn.Sequential(
@@ -154,10 +175,19 @@ class FrequencyCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2, 2)          # H/8, W/8
         )
+        self.res3 = ResidualBlock(128)
 
         # Block 4: high-level frequency representation
         self.conv4 = nn.Sequential(
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, 2)          # H/16, W/16
+        )
+
+        # Block 5: deepest abstraction
+        self.conv5 = nn.Sequential(
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
         )
@@ -169,7 +199,7 @@ class FrequencyCNN(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(256, feature_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3)
+            nn.Dropout(p=0.4)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -181,9 +211,13 @@ class FrequencyCNN(nn.Module):
             feature vector of shape (batch, feature_dim)
         """
         x = self.conv1(x)           # (batch, 32, H/2, W/2)
+        x = self.res1(x)
         x = self.conv2(x)           # (batch, 64, H/4, W/4)
+        x = self.res2(x)
         x = self.conv3(x)           # (batch, 128, H/8, W/8)
-        x = self.conv4(x)           # (batch, 256, H/8, W/8)
+        x = self.res3(x)
+        x = self.conv4(x)           # (batch, 256, H/16, W/16)
+        x = self.conv5(x)           # (batch, 256, H/16, W/16)
         x = self.gap(x)             # (batch, 256, 1, 1)
         x = x.view(x.size(0), -1)  # (batch, 256)
         x = self.fc(x)             # (batch, feature_dim)

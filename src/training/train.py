@@ -70,27 +70,72 @@ def set_seed(seed: int):
 def get_model(cfg: Config):
     """
     Create the correct model based on training mode.
+
+    Fusion training strategy (3 stages):
+      Stage 1 (branch_a/b/c): Train each branch independently.
+      Stage 2 (fusion): Load pretrained branches, FREEZE them, train only the
+                        fusion head. Requires all three branch checkpoints.
+      Stage 3 (joint):  Optional fine-tuning. All branches + fusion unfrozen
+                        at a very low LR (1e-5). Run after Stage 2.
     """
     if cfg.mode == "branch_a":
+        print("Mode: BRANCH_A — pixel domain SRM + residual CNN")
         return BranchAClassifier(feature_dim=cfg.feature_dim_a, num_classes=cfg.num_classes)
     elif cfg.mode == "branch_b":
+        print("Mode: BRANCH_B — DCT frequency CNN")
+        print("[WARNING] Branch B is trained on the SAME LSB dataset as Branch A.")
+        print("          DCT-domain JPEG stego methods (J-UNIWARD, F5) are NOT yet implemented.")
+        print("          Branch B results are informational only until a real JPEG stego")
+        print("          generator is integrated. Do NOT claim DCT-domain detection in the paper.")
         return BranchBClassifier(feature_dim=cfg.feature_dim_b, num_classes=cfg.num_classes)
     elif cfg.mode == "branch_c":
+        print("Mode: BRANCH_C — statistical features MLP")
         return BranchCClassifier(feature_dim=cfg.feature_dim_c, num_classes=cfg.num_classes)
-    elif cfg.mode in ("fusion", "joint"):
+    elif cfg.mode == "fusion":
+        # Stage 2: load pretrained branches and FREEZE them
         model = MultiBranchSteganalyzer(
             feature_dim_a=cfg.feature_dim_a,
             feature_dim_b=cfg.feature_dim_b,
             feature_dim_c=cfg.feature_dim_c,
             num_classes=cfg.num_classes
         )
-        # Try to load pre-trained branch weights (for "fusion" mode)
-        if cfg.mode == "fusion":
-            model.load_pretrained_branches(
-                branch_a_path=os.path.join(cfg.checkpoint_dir, cfg.branch_a_name),
-                branch_b_path=os.path.join(cfg.checkpoint_dir, cfg.branch_b_name),
-                branch_c_path=os.path.join(cfg.checkpoint_dir, cfg.branch_c_name)
-            )
+        # load_pretrained_branches raises FileNotFoundError if any checkpoint is missing
+        model.load_pretrained_branches(
+            branch_a_path=os.path.join(cfg.checkpoint_dir, cfg.branch_a_name),
+            branch_b_path=os.path.join(cfg.checkpoint_dir, cfg.branch_b_name),
+            branch_c_path=os.path.join(cfg.checkpoint_dir, cfg.branch_c_name)
+        )
+        # FREEZE all branch parameters — only the fusion head is trained
+        for param in model.branch_a.parameters():
+            param.requires_grad = False
+        for param in model.branch_b.parameters():
+            param.requires_grad = False
+        for param in model.branch_c.parameters():
+            param.requires_grad = False
+        frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Mode: FUSION — branches FROZEN ({frozen:,} params), "
+              f"fusion head trainable ({trainable:,} params)")
+        return model
+    elif cfg.mode == "joint":
+        # Stage 3: ALL parameters trainable (branches + fusion)
+        # Use a much lower LR (1e-5) to avoid catastrophic forgetting
+        model = MultiBranchSteganalyzer(
+            feature_dim_a=cfg.feature_dim_a,
+            feature_dim_b=cfg.feature_dim_b,
+            feature_dim_c=cfg.feature_dim_c,
+            num_classes=cfg.num_classes
+        )
+        # Optionally load the fusion checkpoint if it exists
+        fusion_ckpt = os.path.join(cfg.checkpoint_dir, cfg.best_model_name)
+        if os.path.exists(fusion_ckpt):
+            state = torch.load(fusion_ckpt, map_location="cpu")
+            model.load_state_dict(state)
+            print(f"Mode: JOINT — loaded fusion checkpoint from {fusion_ckpt}")
+            print("  All parameters unfrozen for end-to-end fine-tuning.")
+        else:
+            print("Mode: JOINT — no fusion checkpoint found; training all params from scratch.")
+            print("  Tip: run --mode fusion first, then --mode joint with --lr 1e-5")
         return model
     else:
         raise ValueError(f"Unknown mode: {cfg.mode}. "
@@ -127,9 +172,17 @@ def train_one_epoch(
     total_correct = 0
     total_samples = 0
 
-    for batch_idx, (images, labels) in enumerate(loader):
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+    for batch_idx, (clean_imgs, stego_imgs) in enumerate(loader):
+        B = clean_imgs.size(0)
+        # Stack pairs and generate alternating labels
+        images = torch.cat([clean_imgs, stego_imgs], dim=0)
+        labels = torch.cat([torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)], dim=0)
+        
+        # Shuffle the concatenated batch to improve BN mixing (Fix #10)
+        idx = torch.randperm(2 * B)
+        images = images[idx].to(device, non_blocking=True)
+        labels = labels[idx].to(device, non_blocking=True)
+
 
         optimizer.zero_grad()
 
@@ -182,9 +235,10 @@ def validate(
     total_correct = 0
     total_samples = 0
 
-    for images, labels in loader:
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+    for clean_imgs, stego_imgs in loader:
+        B = clean_imgs.size(0)
+        images = torch.cat([clean_imgs, stego_imgs], dim=0).to(device, non_blocking=True)
+        labels = torch.cat([torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)], dim=0).to(device, non_blocking=True)
 
         logits = model(images)
         loss = criterion(logits, labels)
@@ -209,12 +263,13 @@ def train(cfg: Config):
     print(f"\nTraining on: {device}\n")
 
     # ── Data ──────────────────────────────────────────────────────────────────
-    train_loader, val_loader = get_dataloaders(
+    train_loader, val_loader, _test_loader = get_dataloaders(
         clean_dir=cfg.clean_dir,
         stego_dir=cfg.stego_dir,
         batch_size=cfg.batch_size,
         crop_size=cfg.image_size,      # lossless crop, not bilinear resize
         val_split=cfg.val_split,
+        test_split=cfg.test_split,
         max_images=cfg.max_images,
         num_workers=cfg.num_workers
     )
@@ -233,7 +288,7 @@ def train(cfg: Config):
           f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable params")
 
     # ── Loss & Optimizer ──────────────────────────────────────────────────────
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()  # label_smoothing removed until >95% achieved (Fix #6)
 
     if cfg.optimizer == "adamw":
         optimizer = optim.AdamW(

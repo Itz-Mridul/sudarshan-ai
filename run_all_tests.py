@@ -530,6 +530,42 @@ run_test("Chi-square decreases after LSB embedding (direction correct)", test_ch
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# GROUP 5 — Frequency-Domain (DCT) Steganography
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+print("\n" + "=" * 60)
+print("  [ Group 5 ] Frequency-Domain (DCT) Steganography")
+print("=" * 60)
+
+def test_dct_embedder_basic():
+    """DCT embedder must successfully embed and produce a valid stego image."""
+    from data_pipeline.dct_embedder import embed_dct
+    img = np.random.randint(0, 256, (64, 64), dtype=np.uint8)
+    payload = b"DCT test payload"
+    stego = embed_dct(img, payload)
+    
+    assert stego.shape == (64, 64)
+    # DCT embedding introduces widespread but small changes
+    max_diff = np.abs(img.astype(float) - stego.astype(float)).max()
+    assert 0 < max_diff <= 150, f"Max diff out of bounds: {max_diff}"
+
+def test_dct_payload_too_large():
+    """DCT embedder must raise ValueError when payload exceeds non-zero AC capacity."""
+    from data_pipeline.dct_embedder import embed_dct
+    img = np.zeros((16, 16), dtype=np.uint8) # 0s result in zero AC coefficients
+    payload = b"too much data for zero ACs"
+    raised = False
+    try:
+        embed_dct(img, payload)
+    except ValueError:
+        raised = True
+    assert raised, "Should raise ValueError for oversized payload"
+
+run_test("DCT embedder basic functionality", test_dct_embedder_basic)
+run_test("DCT embedder raises ValueError on oversized payload", test_dct_payload_too_large)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # SUMMARY
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

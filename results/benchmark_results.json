@@ -1,0 +1,26 @@
+{
+  "Branch A (Pixel CNN)": {
+    "size_mb": 1.83,
+    "params": 453872,
+    "median_ms": 78.9,
+    "p95_ms": 106.8
+  },
+  "Branch B (DCT CNN)": {
+    "size_mb": 1.83,
+    "params": 454626,
+    "median_ms": 51.3,
+    "p95_ms": 74.1
+  },
+  "Branch C (Stats MLP)": {
+    "size_mb": 0.43,
+    "params": 105186,
+    "median_ms": 4.4,
+    "p95_ms": 6.2
+  },
+  "MBCSS Fusion FP32": {
+    "size_mb": 4.4,
+    "params": 1091824,
+    "median_ms": 141.6,
+    "p95_ms": 188.6
+  }
+}

@@ -31,23 +31,48 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from model.srm_filters import SRMFilterLayer
 
 
+class ResidualBlock(nn.Module):
+    """Simple residual block for deeper feature extraction."""
+    def __init__(self, channels: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(channels),
+        )
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(x + self.block(x))
+
+
 class PixelCNN(nn.Module):
     """
     Branch A: Pixel Domain Convolutional Neural Network.
 
     Takes a grayscale image, applies SRM filters to get residuals,
-    then runs a CNN to extract a feature vector for classification.
+    then runs a deep residual CNN to extract a feature vector for classification.
 
-    Architecture:
-        SRMFilterLayer (30 channels, fixed)
+    Architecture (upgraded):
+        SRMFilterLayer (30 channels, fixed) → TanH clamp
           ↓
         ConvBlock 1: Conv(30→64) → BN → ReLU → MaxPool
           ↓
+        ResidualBlock(64)
+          ↓
         ConvBlock 2: Conv(64→128) → BN → ReLU → MaxPool
           ↓
-        ConvBlock 3: Conv(128→256) → BN → ReLU → AvgPool
+        ResidualBlock(128)
           ↓
-        GlobalAveragePool → Flatten → FC(256) → feature_vector
+        ConvBlock 3: Conv(128→256) → BN → ReLU → MaxPool
+          ↓
+        ResidualBlock(256)
+          ↓
+        ConvBlock 4: Conv(256→512) → BN → ReLU → AvgPool
+          ↓
+        GlobalAveragePool → Flatten → FC(512→feature_dim) → feature_vector
     """
 
     def __init__(self, feature_dim: int = 256):
@@ -70,6 +95,7 @@ class PixelCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2)      # spatial: H/2, W/2
         )
+        self.res1 = ResidualBlock(64)
 
         # ── CNN Block 2: extract mid-level patterns ───────────────────────────
         self.conv2 = nn.Sequential(
@@ -78,6 +104,7 @@ class PixelCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2)      # spatial: H/4, W/4
         )
+        self.res2 = ResidualBlock(128)
 
         # ── CNN Block 3: extract high-level stego signatures ──────────────────
         self.conv3 = nn.Sequential(
@@ -86,16 +113,25 @@ class PixelCNN(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2)      # spatial: H/8, W/8
         )
+        self.res3 = ResidualBlock(256)
+
+        # ── CNN Block 4: deep feature abstraction ─────────────────────────────
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.AvgPool2d(kernel_size=2, stride=2)      # spatial: H/16, W/16
+        )
 
         # ── Global Average Pooling: collapse spatial dims ─────────────────────
-        # Output shape: (batch, 256) regardless of input image size
+        # Output shape: (batch, 512) regardless of input image size
         self.gap = nn.AdaptiveAvgPool2d(1)
 
         # ── Fully Connected → feature vector ─────────────────────────────────
         self.fc = nn.Sequential(
-            nn.Linear(256, feature_dim),
+            nn.Linear(512, feature_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3)
+            nn.Dropout(p=0.4)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -107,16 +143,26 @@ class PixelCNN(nn.Module):
             feature vector of shape (batch, feature_dim)
         """
         # Step 1: Apply SRM filters to get pixel residuals
-        x = self.srm(x)             # (batch, 30, H, W)
+        # Undo T.Normalize([-1, 1] -> [0, 255]) so SRM filters get the correct LSB scale
+        x_raw = (x * 127.5) + 127.5
+        x = self.srm(x_raw)         # (batch, 30, H, W)
 
-        # Step 2: Run through CNN blocks
+        # TanH clamping: bounds residuals to [-3, 3], stabilizes BatchNorm
+        # (Xu-Net design decision — prevents unstable gradients from outlier residuals)
+        x = torch.tanh(x / 3.0) * 3.0
+
+        # Step 2: Run through CNN blocks with residual connections
         x = self.conv1(x)           # (batch, 64, H/2, W/2)
+        x = self.res1(x)
         x = self.conv2(x)           # (batch, 128, H/4, W/4)
+        x = self.res2(x)
         x = self.conv3(x)           # (batch, 256, H/8, W/8)
+        x = self.res3(x)
+        x = self.conv4(x)           # (batch, 512, H/16, W/16)
 
         # Step 3: Global average pooling + flatten
-        x = self.gap(x)             # (batch, 256, 1, 1)
-        x = x.view(x.size(0), -1)  # (batch, 256)
+        x = self.gap(x)             # (batch, 512, 1, 1)
+        x = x.view(x.size(0), -1)  # (batch, 512)
 
         # Step 4: FC layer → feature vector
         x = self.fc(x)             # (batch, feature_dim)

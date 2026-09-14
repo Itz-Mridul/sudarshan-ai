@@ -1,0 +1,77 @@
+================================================================
+STEGANOGRAPHY DETECTION USING MULTI-BRANCH CNN
+Interview & Viva Preparation Guide (Simple Indian English)
+================================================================
+
+================================================================
+PART 1: PROJECT EXPLANATION IN SIMPLE TERMS
+================================================================
+
+1. What is the Problem?
+Imagine a scenario in a high-security defense organization like DRDO. An insider wants to leak a highly classified PDF document to an external server. If he sends it directly, the firewall or Data Loss Prevention (DLP) system will immediately block it. 
+So, what does the insider do? He takes a very normal-looking image (like a scenery or a cricket match) and uses a technique called "Steganography" to hide the secret PDF document inside the raw pixels of that image. The image looks 100% normal to the human eye, and standard antiviruses completely ignore it because it's just an image file. The insider sends the image out, and the data is leaked.
+
+2. What is our Solution?
+Our project is building an AI-powered "Steganography Detector". We have built a Multi-Branch Convolutional Neural Network (CNN) that inspects an image like a team of three expert detectives:
+
+- Detective 1 (Branch A - Pixel Domain): Uses SRM (Spatial Rich Model) filters like a microscope to look at the raw pixel values. It catches LSB (Least Significant Bit) steganography where attackers change the last bit of the color values.
+- Detective 2 (Branch B - Frequency Domain): Looks at the image in the DCT (Discrete Cosine Transform) frequency domain. This is how JPEG images are compressed. It acts like an X-ray scanner to catch attackers hiding data inside JPEG frequencies (like the F5 or J-UNIWARD algorithms).
+- Detective 3 (Branch C - Statistical Domain): Checks the mathematical properties of the image like histogram changes and Chi-square tests to catch AI-generated (GAN-based) steganography.
+
+Finally, a "Senior Officer" (The Fusion Layer) takes the reports from all three detectives and gives the final verdict: CLEAN or STEGO, along with a confidence percentage.
+
+3. What else makes it special?
+- Defense Context Scoring: We don't just say "stego detected". We calculate a risk score based on who sent it, at what time, and to which IP address. (e.g., An intern sending a file at 2 AM to an external IP gets a CRITICAL alert).
+- CPU-only Deployment (INT8 Quantization): Deep learning models usually need expensive GPUs to run. We compress our model using INT8 quantization so it can run fast on standard, air-gapped CPU laptops inside defense organizations.
+
+================================================================
+PART 2: HOW ARE WE BETTER THAN PREVIOUS WORK?
+================================================================
+
+The interviewer will definitely ask: "Why did you build this? Hasn't this been done before?"
+Here is how you answer and prove that our project is better than existing systems.
+
+1. Comparison with Traditional Antivirus:
+- Previous Work: Firewalls and Antivirus software (like Norton, McAfee) check for malware signatures.
+- Our Advantage: Steganography is not malware; it is just hidden data. Antivirus is completely blind to it. Our AI is specifically trained to catch these microscopic data-hiding patterns.
+
+2. Comparison with Xu-Net (Famous 2016 Research Paper):
+- Previous Work: Xu-Net is a very famous 5-layer CNN for steganalysis. However, it only looks at the spatial pixel domain. 
+- Our Advantage: If an attacker uses JPEG frequency steganography (like J-UNIWARD), Xu-Net will be fooled. Our model has Branch B (DCT Frequency CNN) specifically to catch what Xu-Net misses. We are checking multiple domains at once.
+
+3. Comparison with Yedroudj-Net (2018 Research Paper):
+- Previous Work: Very accurate, but very heavy. It requires powerful GPUs to run inference.
+- Our Advantage: Defense environments (like DRDO) have isolated, air-gapped computers without GPUs. We apply INT8 quantization to shrink our model size by 4x and make it run on basic CPUs with almost no loss in accuracy. 
+
+Summary of Supremacy: No single existing tool checks Spatial, Frequency, and Statistical domains all at the exact same time, nor are they optimized for CPU defense deployments. That is our unique research contribution.
+
+================================================================
+PART 3: EXPECTED INTERVIEW / VIVA QUESTIONS & ANSWERS
+================================================================
+
+Q1: What exactly is Steganography and how is it different from Cryptography?
+Answer: Sir, Cryptography means scrambling data so it becomes unreadable (like a secret code). But everyone can clearly see that a secret message is being sent. Steganography is hiding the very existence of the data. The data is hidden inside a normal medium like an image, so no one even suspects that a secret message is there.
+
+Q2: What is LSB Steganography?
+Answer: LSB stands for Least Significant Bit. Every pixel in an image has color values from 0 to 255 (which is 8 bits in binary). If an attacker wants to hide a binary message, they change the last bit (the 8th bit) of the pixel's color value. For example, changing a color value from 200 to 201. The human eye cannot see this tiny change, but the data is safely hidden.
+
+Q3: Why did you use SRM filters in your CNN?
+Answer: Sir, SRM stands for Spatial Rich Model. A normal CNN focuses on the content of the image (like detecting dogs or cars). We don't care about the content; we care about the microscopic noise. SRM filters act as high-pass filters that suppress the image content (the dog) and amplify the tiny, invisible noise (the hidden data) so our CNN can learn from it. We freeze these filter weights so the CNN doesn't change them.
+
+Q4: If Xu-Net already exists, what is the novelty of your project?
+Answer: Sir, Xu-Net only looks at spatial pixels. If an attacker hides data in the JPEG frequency domain (using DCT coefficients), Xu-Net will fail to detect it. Our novelty is the Multi-Branch architecture. We have Branch A for pixels, Branch B for frequencies (DCT), and Branch C for statistics. Our Fusion layer combines them, making it robust against multiple types of attacks at once.
+
+Q5: Why did you apply INT8 Quantization?
+Answer: Standard AI models use 32-bit floating point numbers (FP32), which requires heavy GPUs. Since our target application is defense organizations where systems are often air-gapped and lack GPUs, we quantized the weights to 8-bit integers (INT8). This reduces the model size by 4 times and speeds up inference on regular CPUs, making it actually deployable in the real world.
+
+Q6: How did you create your dataset for training?
+Answer: We used the standard BOSSbase dataset, which has 10,000 clean grayscale images. To create the stego (hacked) images, we wrote our own Python embedder scripts. We embedded random payloads into the images using both LSB substitution and frequency-domain modifications. This gave us a perfectly balanced dataset of 10,000 clean and 10,000 stego images.
+
+Q7: How did you ensure there is no Data Leakage between Train and Test sets?
+Answer: This is a critical machine learning issue. If the clean version of "image_001" goes to the training set, and the stego version of "image_001" goes to the test set, the model will cheat. To fix this, we wrote a "pair-safe" splitting algorithm. We split the dataset based on the original image filename (the stem) BEFORE generating the dataset. This guarantees that both the clean and stego pair of an image strictly go to either train, validation, or test.
+
+Q8: What loss function and metrics did you use?
+Answer: We used standard Cross-Entropy Loss for the binary classification (Clean vs Stego). For metrics, we didn't just rely on Accuracy. We also calculated Precision, Recall, F1-Score, and plotted the ROC curve to measure the Area Under Curve (AUC), because in security applications, minimizing False Positives is very important.
+
+Q9: What happens if I change the payload size? (e.g., hiding a smaller file)
+Answer: That is called the Payload Rate, usually measured in bits per pixel (bpp). If the attacker hides less data (like 0.05 bpp), the steganography becomes much harder to detect because fewer pixels are changed. We built a specific script (`evaluate_payloads.py`) to test our model's sensitivity across different payload rates to prove it can still catch small hidden files.

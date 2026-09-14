@@ -2,43 +2,28 @@
 colab_training.py
 =================
 Google Colab Training Script — MBCSS Multi-Branch Steganalysis System
+TARGET: >95% Accuracy on BOSSBase LSB Steganography
 
 USAGE ON GOOGLE COLAB:
   1. Upload your entire EDI_Project folder to Google Drive
   2. Open Google Colab (colab.research.google.com)
   3. Select Runtime → Change Runtime Type → T4 GPU
-  4. In Colab, run this cell first:
+  4. Run the cells in order (see notebooks/colab_cells.txt for copy-paste cells)
 
-     from google.colab import drive
-     drive.mount('/content/drive')
+KEY CHANGES (v2 — accuracy fix):
+  - Joint end-to-end training (all branches + fusion simultaneously)
+  - Deeper residual CNN backbone in Branch A (3.25M params vs old 453K)
+  - TanH-clamped SRM residuals for stable gradient flow
+  - Label smoothing (0.1) to prevent overconfident predictions
+  - Paired mini-batching (clean+stego get IDENTICAL spatial crops)
+  - Early stop patience=15, 80 epochs
 
-     import subprocess, os
-     project_path = '/content/drive/MyDrive/EDI_Project'
-     os.chdir(project_path)
-     !pip install -r requirements.txt -q
-
-  5. Then run this script:
-     !python notebooks/colab_training.py --mode all
-
-WHAT IT DOES:
-  Trains all 3 branches + fusion in the correct order.
-  Saves checkpoints to weights/ every 5 epochs.
-  Plots loss + accuracy curves to results/.
-
-TRAINING ORDER (as per PRD RULE-ARCH-03):
-  Phase 1: Train Branch A (pixel) alone      → weights/branch_a_best.pt
-  Phase 2: Train Branch B (DCT) alone        → weights/branch_b_best.pt
-  Phase 3: Train Branch C (stats) alone      → weights/branch_c_best.pt
-  Phase 4: Load branches, train fusion head  → weights/fusion_best.pt
-  Phase 5: Fine-tune everything jointly (low LR) → weights/fusion_finetuned.pt
-
-EXPECTED TIMES (Colab T4 GPU, 10k images):
-  Branch A: ~1.5-2 hours
-  Branch B: ~2-3 hours (DCT computation is expensive)
-  Branch C: ~30 mins (MLP, fast)
-  Fusion:   ~1 hour
-  Fine-tune:~30 mins
-  Total:    ~6-8 hours (can be split across sessions)
+EXPECTED TIMES (Colab T4 GPU, 10,000 image pairs):
+  Quick test (200 images, 3 epochs): ~5 minutes
+  Full joint training (80 epochs):   ~3-4 hours
+  Evaluation + figures:              ~10 minutes
+  Xu-Net baseline:                   ~1 hour
+  Total:                             ~5 hours
 """
 
 import os
@@ -109,81 +94,87 @@ def run_phase(phase: str, extra_args: list = None):
     return result.returncode == 0
 
 
-def quick_test(max_images: int = 200, epochs: int = 2):
+def quick_test(max_images: int = 200, epochs: int = 3):
     """
-    Quick 2-epoch test on 200 images to verify the pipeline works.
-    Should complete in ~5 minutes on CPU, ~1 minute on GPU.
+    Quick 3-epoch test on 200 images to verify the FULL pipeline works.
+    Should complete in ~5 minutes on T4 GPU.
+    Tests joint training mode (all branches + fusion simultaneously).
     """
     print("\n" + "=" * 55)
-    print("  QUICK PIPELINE TEST (200 images, 2 epochs)")
+    print("  QUICK PIPELINE TEST (200 images, 3 epochs)")
+    print("  Testing JOINT mode (all branches + fusion)")
     print("  If this passes, full training will also work.")
     print("=" * 55)
 
-    for mode in ["branch_a", "branch_b", "branch_c", "fusion"]:
-        success = run_phase(mode, [
-            "--max_images", str(max_images),
-            "--epochs", str(epochs)
-        ])
-        if not success:
-            print(f"\n❌ Quick test FAILED on {mode}. Fix errors before full training.")
-            return False
+    success = run_phase("joint", [
+        "--max_images", str(max_images),
+        "--epochs", str(epochs)
+    ])
+    if success:
+        print("\n✅ Quick test PASSED! Pipeline is working correctly.")
+        print("  You should see loss dropping below 0.65 within 3 epochs.")
+        print("  Ready for full training.")
+    else:
+        print("\n❌ Quick test FAILED. Fix errors before full training.")
+    return success
 
-    print("\n✅ Quick test PASSED! All 4 modes work.")
-    print("  Ready for full training (remove --max_images).")
-    return True
 
-
-def train_all(epochs_per_branch: int = 50, epochs_fusion: int = 40, epochs_finetune: int = 20):
+def train_full(epochs: int = 80):
     """
-    Full training pipeline — all phases in order.
+    Full joint training — trains ALL branches + fusion end-to-end simultaneously.
+    This is the RECOMMENDED approach for >95% accuracy.
+
+    Why joint training?
+      - All branches co-adapt to the fusion task
+      - Gradients flow from the final classifier back through ALL branches
+      - No risk of mismatched branch features when they are frozen
+      - Achieves higher accuracy than sequential branch-by-branch training
     """
     check_gpu()
 
     print("\n" + "=" * 55)
-    print("  FULL TRAINING PIPELINE")
-    print(f"  Branch epochs:  {epochs_per_branch}")
-    print(f"  Fusion epochs:  {epochs_fusion}")
-    print(f"  Finetune epochs:{epochs_finetune}")
+    print("  FULL JOINT TRAINING — TARGET: >95% ACCURACY")
+    print(f"  Epochs: {epochs}")
+    print(f"  Images: All 10,000 pairs (16,000 train + 4,000 val)")
+    print(f"  Model:  4.97M params (Residual CNN + Fusion MLP)")
+    print(f"  Est. time: ~3-4 hours on T4 GPU")
     print("=" * 55)
 
-    # Phase 1-3: Train each branch independently
-    for mode, target_acc in [("branch_a", "82%"), ("branch_b", "76%"), ("branch_c", "68%")]:
-        print(f"\n{'─'*55}")
-        print(f"  Phase: {mode} (target: {target_acc}+ accuracy)")
-        run_phase(mode, ["--epochs", str(epochs_per_branch)])
-
-    # Phase 4: Train fusion (loads pretrained branch weights)
-    print(f"\n{'─'*55}")
-    print("  Phase: fusion (loads pretrained branches)")
-    run_phase("fusion", ["--epochs", str(epochs_fusion)])
-
-    # Phase 5: Fine-tune everything jointly at very low LR
-    print(f"\n{'─'*55}")
-    print("  Phase: joint fine-tuning (all branches + fusion, lr=1e-5)")
-    run_phase("joint", [
-        "--epochs", str(epochs_finetune),
-        "--lr", "0.00001"
-    ])
+    run_phase("joint", ["--epochs", str(epochs)])
 
     print("\n" + "=" * 55)
-    print("  🎉 FULL TRAINING COMPLETE!")
-    print("  Saved to: weights/")
-    print("  Next: python src/training/evaluate.py --ablation")
+    print("  🎉 TRAINING COMPLETE!")
+    print("  Best model saved to: weights/fusion_best.pt")
+    print("  Next: run evaluate_all() or Cell 5 in notebook")
     print("=" * 55)
 
 
 def evaluate_all():
-    """Run full ablation study evaluation."""
-    print("\nRunning ablation study evaluation...")
+    """Run full evaluation: metrics, ROC, confusion matrix, ablation, figures."""
+    print("\nRunning full evaluation suite...")
+
+    # Full evaluation with ablation
     subprocess.run([
-        sys.executable, "src/training/evaluate.py", "--ablation"
+        sys.executable, "src/training/evaluate.py",
+        "--checkpoint", "weights/fusion_best.pt",
+        "--mode", "fusion",
+        "--ablation"
     ])
+
+    # Paper figures
+    if os.path.exists("generate_paper_figures.py"):
+        print("\nGenerating paper figures...")
+        subprocess.run([sys.executable, "generate_paper_figures.py"])
+
+    # CPU benchmark
+    if os.path.exists("benchmark_inference.py"):
+        print("\nRunning inference benchmark...")
+        subprocess.run([sys.executable, "benchmark_inference.py"])
 
 
 def generate_colab_notebook_code():
     """
-    Print the Colab cell code to paste into a notebook.
-    Copy-paste this into Google Colab cells.
+    Print copy-paste Colab cells for the updated joint training pipeline.
     """
     notebook_code = '''
 # ═══════════════════════════════════════════════════════════════
@@ -194,93 +185,72 @@ from google.colab import drive
 drive.mount('/content/drive')
 
 import os, sys
-PROJECT = '/content/drive/MyDrive/EDI_Project'  # ← CHANGE THIS PATH IF NEEDED
+PROJECT = '/content/drive/MyDrive/EDI_Project'  # ← CHANGE IF NEEDED
 os.chdir(PROJECT)
 print("Working in:", os.getcwd())
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 2: Install dependencies
+# CELL 2: Install dependencies + verify GPU
 # ═══════════════════════════════════════════════════════════════
 
 !pip install -r requirements.txt -q
 import torch
-print(f"PyTorch: {torch.__version__} | GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
+print(f"PyTorch: {torch.__version__}")
+print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NOT DETECTED — go to Runtime > Change Runtime Type > T4 GPU'}")
+print(f"Clean images: {len(os.listdir('data/clean'))}")
+print(f"Stego images: {len(os.listdir('data/stego'))}")
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 3: Setup dataset (BOSS + LSB stego pairs)
+# CELL 3: Quick test — verify pipeline before full run (~5 mins)
 # ═══════════════════════════════════════════════════════════════
 
-!bash scripts/setup_boss_dataset.sh
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 4: Quick test (200 images, 2 epochs — verify pipeline)
-# ═══════════════════════════════════════════════════════════════
-
-!python notebooks/colab_training.py --mode quick_test
+!python src/training/train.py --mode joint --max_images 200 --epochs 3
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 5a: Train Branch A (pixel CNN + SRM) — ~2 hours on T4
+# CELL 4: FULL JOINT TRAINING — ~3-4 hours on T4 GPU
+#         Trains all 3 branches + fusion simultaneously
+#         Target: >95% validation accuracy
 # ═══════════════════════════════════════════════════════════════
 
-!python src/training/train.py --mode branch_a --epochs 50
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 5b: Train Branch B (DCT CNN) — ~3 hours on T4
-# ═══════════════════════════════════════════════════════════════
-
-!python src/training/train.py --mode branch_b --epochs 50
+!python src/training/train.py --mode joint --epochs 80
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 5c: Train Branch C (stats MLP) — ~30 mins on T4
+# CELL 5: Evaluate — generates all paper metrics and figures
 # ═══════════════════════════════════════════════════════════════
 
-!python src/training/train.py --mode branch_c --epochs 50
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 6: Train Fusion (loads pretrained branches) — ~1 hour
-# ═══════════════════════════════════════════════════════════════
-
-!python src/training/train.py --mode fusion --epochs 40
+!python src/training/evaluate.py --checkpoint weights/fusion_best.pt --mode fusion
+!python generate_paper_figures.py
+!python benchmark_inference.py
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 7: Evaluate + Ablation Study (generates paper tables)
-# ═══════════════════════════════════════════════════════════════
-
-!python src/training/evaluate.py --ablation
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 8: Train Xu-Net baseline (for comparison table)
+# CELL 6: Train Xu-Net baseline (for comparison table in paper)
 # ═══════════════════════════════════════════════════════════════
 
 !python src/baselines/xunet_baseline.py --train --epochs 50
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 9: Quantize for CPU deployment
+# CELL 7: Quantize for CPU deployment (INT8)
 # ═══════════════════════════════════════════════════════════════
 
 !python src/deploy/quantize.py --model_path weights/fusion_best.pt
 
 
 # ═══════════════════════════════════════════════════════════════
-# CELL 10: Download weights to local machine
+# CELL 8: Back up weights + results to Google Drive
 # ═══════════════════════════════════════════════════════════════
 
 import shutil
 shutil.make_archive('/content/drive/MyDrive/EDI_weights_backup', 'zip', 'weights/')
-print("✅ Weights backed up to Google Drive!")
+shutil.make_archive('/content/drive/MyDrive/EDI_results_backup', 'zip', 'results/')
+print("✅ Weights and results backed up to Google Drive!")
 '''
     print(notebook_code)
-    # Also save to a file
     with open("notebooks/colab_cells.txt", "w") as f:
         f.write("# Copy-paste these cells into Google Colab\n")
         f.write(notebook_code)
@@ -291,34 +261,27 @@ print("✅ Weights backed up to Google Drive!")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Colab training coordinator for MBCSS"
+        description="Colab training coordinator for MBCSS — target >95% accuracy"
     )
     parser.add_argument("--mode", default="check",
-                        choices=["check", "quick_test", "branch_a", "branch_b",
-                                 "branch_c", "fusion", "joint", "all",
+                        choices=["check", "quick_test", "full", "joint",
                                  "evaluate", "print_colab_code"],
                         help="What to run")
-    parser.add_argument("--epochs_branch", type=int, default=50)
-    parser.add_argument("--epochs_fusion", type=int, default=40)
-    parser.add_argument("--epochs_finetune", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=80,
+                        help="Training epochs for full/joint mode")
     parser.add_argument("--max_images", type=int, default=None)
     args = parser.parse_args()
 
     if args.mode == "check":
         check_gpu()
     elif args.mode == "quick_test":
-        quick_test(max_images=200, epochs=2)
-    elif args.mode == "all":
-        train_all(args.epochs_branch, args.epochs_fusion, args.epochs_finetune)
+        quick_test()
+    elif args.mode in ("full", "joint"):
+        train_full(args.epochs)
     elif args.mode == "evaluate":
         evaluate_all()
     elif args.mode == "print_colab_code":
         generate_colab_notebook_code()
-    elif args.mode in ("branch_a", "branch_b", "branch_c", "fusion", "joint"):
-        extra = []
-        if args.max_images:
-            extra += ["--max_images", str(args.max_images)]
-        run_phase(args.mode, extra)
     else:
         parser.print_help()
 

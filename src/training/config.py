@@ -18,7 +18,8 @@ class Config:
     stego_dir: str        = "data/stego"
     image_size: int       = 256        # resize all images to this square
     max_images: Optional[int] = None   # None = use all images; set 2000 for quick tests
-    val_split: float      = 0.20       # 20% validation
+    val_split: float      = 0.15       # 15% validation
+    test_split: float     = 0.15       # 15% final test — NEVER use for tuning
 
     # ── Batch / Workers ───────────────────────────────────────────────────────
     batch_size: int       = 32
@@ -31,10 +32,10 @@ class Config:
     num_classes: int      = 2          # 0=clean, 1=stego
 
     # ── Training ──────────────────────────────────────────────────────────────
-    epochs: int           = 50
+    epochs: int           = 80
     learning_rate: float  = 1e-4
-    weight_decay: float   = 1e-5
-    early_stop_patience: int = 8       # stop if val loss doesn't improve for N epochs
+    weight_decay: float   = 1e-4
+    early_stop_patience: int = 15      # stop if val loss doesn't improve for N epochs
 
     # ── Optimizer / Scheduler ─────────────────────────────────────────────────
     optimizer: str        = "adamw"    # "adamw" or "sgd"
