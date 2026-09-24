@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-20%2F20_passing-brightgreen)](run_all_tests.py)
 
-<img src="assets/app_preview.png" alt="Sudarshana UI Preview" width="800"/>
+<img src="assets/sudarshana_hero.png" alt="Sudarshana UI Preview" width="800"/>
 
 A multi-branch deep learning system that detects hidden steganographic content in images across three signal domains simultaneously — and provides a defense-context risk score for air-gapped DRDO/defence endpoints.
 
