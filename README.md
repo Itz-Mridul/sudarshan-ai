@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ StegShield — Multi-Branch CNN Steganalysis System
+# 🛡️ Sudarshana — Multi-Branch CNN Steganalysis System
 
 **MBCSS · 2nd Year CSE Research Project · India Provisional Patent Pending**
 
@@ -9,6 +9,8 @@
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B?logo=streamlit)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-20%2F20_passing-brightgreen)](run_all_tests.py)
+
+<img src="assets/app_preview.jpg" alt="Sudarshana UI Preview" width="800"/>
 
 A multi-branch deep learning system that detects hidden steganographic content in images across three signal domains simultaneously — and provides a defense-context risk score for air-gapped DRDO/defence endpoints.
 
@@ -153,7 +155,7 @@ bash scripts/setup_boss_dataset.sh
 ### Step 2 — Verify Everything Works
 ```bash
 python run_all_tests.py
-# Expected: 20/20 tests passed 🎉
+# Expected: 22/22 tests passed 🎉
 ```
 
 ### Step 3 — Quick Training Test (200 images, 2 epochs, ~2 min on CPU)
@@ -182,7 +184,7 @@ Train **in this exact order** (PRD Rule ARCH-03):
 # Phase 1: Pixel branch (SRM + CNN)        — target ≥82% on LSB stego
 python src/training/train.py --mode branch_a --epochs 50
 
-# Phase 2: DCT frequency branch            — target ≥76% on J-UNIWARD
+# Phase 2: DCT frequency branch            — target ≥76% on DCT stego
 python src/training/train.py --mode branch_b --epochs 50
 
 # Phase 3: Statistical branch (MLP)        — target ≥68% (weakest, by design)
@@ -207,15 +209,16 @@ python src/deploy/quantize.py --model_path weights/fusion_best.pt
 
 | Model | Accuracy | Precision | Recall | F1 | AUC | Size | CPU Latency |
 |-------|----------|-----------|--------|-----|------|------|------------|
-| Xu-Net (Xu 2016) | ~80% | ~79% | ~81% | ~80% | ~83% | ~8 MB | ~120 ms |
-| Yedroudj-Net (2018) | ~82% | ~81% | ~83% | ~82% | ~85% | ~12 MB | ~180 ms |
-| **MBCSS — Branch A only** | ~82% | — | — | — | — | — | — |
-| **MBCSS — Branch B only** | ~76% | — | — | — | — | — | — |
-| **MBCSS — Branch C only** | ~68% | — | — | — | — | — | — |
-| **MBCSS Fusion (ours)** | **~87%** | **~86%** | **~88%** | **~87%** | **~91%** | ~50 MB | ~200 ms |
-| **MBCSS INT8 (ours)** | **~85%** | **~84%** | **~86%** | **~85%** | **~89%** | **~13 MB** | **~60 ms** |
+| Xu-Net (Xu 2016) | TBD | TBD | TBD | TBD | TBD | ~8 MB | TBD |
+| Yedroudj-Net (2018) | TBD | TBD | TBD | TBD | TBD | ~12 MB | TBD |
+| **MBCSS — Branch A only** | TBD | — | — | — | — | — | — |
+| **MBCSS — Branch B only** | TBD | — | — | — | — | — | — |
+| **MBCSS — Branch C only** | TBD | — | — | — | — | — | — |
+| **MBCSS Fusion (ours)** | **TBD** | **TBD** | **TBD** | **TBD** | **TBD** | ~50 MB | TBD |
+| **MBCSS INT8 (ours)** | **TBD** | **TBD** | **TBD** | **TBD** | **TBD** | **TBD** | **TBD** |
 
-> **Replace targets with actual numbers from your training runs before paper submission!**
+> ⚠️ **Results are pending full training run. Do NOT cite these numbers until experimentally verified.**
+> Replace all TBD entries with actual numbers from `python src/training/evaluate.py --ablation`.
 
 ---
 
@@ -269,7 +272,7 @@ RULE-ARCH-06  Always save stego as PNG — JPEG re-saves destroy embedded bits.
 | Resolution | 512 × 512 px |
 | Source | http://dde.binghamton.edu/download/ |
 | Stego method | LSB with random payload (10% capacity) |
-| Split | 70% train / 10% val / 20% test |
+| Split | 70% train / 15% val / 15% test |
 | Split type | Pair-safe (see `dataset.py`) |
 
 ---
@@ -334,11 +337,12 @@ RULE-ARCH-06  Always save stego as PNG — JPEG re-saves destroy embedded bits.
 python run_all_tests.py
 ```
 
-Covers 20 tests across 4 groups:
+Covers 22 tests across 5 groups:
 - **Group 1** — LSB Embedder (basic, edge cases, PNG enforcement, JPEG detection)
 - **Group 2** — Dataset split (pair-safety, empty folder guard, transform isolation)
 - **Group 3** — PyTorch models (SRM shape, Branch A/B/C forward, Fusion forward+predict)
 - **Group 4** — Metric edge cases + chi-square direction verification
+- **Group 5** — DCT embedder (basic functionality, oversized payload guard)
 
 ---
 
