@@ -26,3 +26,4 @@ streamlit>=1.28.0
 tqdm>=4.66.0          # progress bars during training
 pandas>=2.0.0         # results tables
 requests>=2.31.0      # for dataset download scripts
+wandb>=0.15.0         # weights & biases for real-time dashboard

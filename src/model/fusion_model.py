@@ -43,8 +43,8 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from branches.branch_a_pixel import PixelCNN
 from branches.branch_b_dct import FrequencyCNN, image_to_dct_tensor
-from branches.branch_c_stats import StatisticsMLP, extract_statistical_features, FEATURE_DIM
-import numpy as np
+from branches.branch_c_stats import StatisticsMLP, FEATURE_DIM
+# Note: numpy import removed — Branch C stats are now computed in pure PyTorch
 
 
 class FusionLayer(nn.Module):
@@ -148,17 +148,59 @@ class MultiBranchSteganalyzer(nn.Module):
     def _get_branch_c_features(self, x: torch.Tensor) -> torch.Tensor:
         """
         Extract statistical features from image tensor for Branch C.
-        This involves CPU-side numpy computation.
-        """
-        batch_features = []
-        for b in range(x.shape[0]):
-            img_np = x[b, 0].cpu().numpy()
-            img_np = ((img_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
-            features = extract_statistical_features(img_np)
-            batch_features.append(features)
 
-        feat_array = np.stack(batch_features, axis=0)
-        return torch.tensor(feat_array, dtype=torch.float32).to(x.device)
+        Batched implementation using PyTorch operations — no Python loop,
+        no NumPy, no SciPy. Runs on the same device as `x` (GPU or CPU).
+
+        Features extracted per image (262-dim total):
+          - 256 histogram bins (normalized)
+          - chi-square statistic (1)
+          - entropy (1)
+          - mean, std, skewness, kurtosis (4)
+        """
+        # Rescale from [-1, 1] → [0, 1] for float statistics
+        x_float = (x + 1.0) * 0.5  # (batch, 1, H, W), float32 in [0,1]
+        B = x_float.shape[0]
+        flat = x_float.view(B, -1)  # (batch, H*W)
+
+        # ── Basic statistics ────────────────────────────────────────────────────
+        mean = flat.mean(dim=1, keepdim=True)           # (batch, 1)
+        std  = flat.std(dim=1, keepdim=True).clamp(min=1e-8)
+        diff = flat - mean
+
+        # Skewness = E[(x-mu)^3] / sigma^3
+        skewness = (diff.pow(3).mean(dim=1, keepdim=True)) / (std.pow(3))
+
+        # Kurtosis = E[(x-mu)^4] / sigma^4  (excess kurtosis: -3)
+        kurtosis = (diff.pow(4).mean(dim=1, keepdim=True)) / (std.pow(4)) - 3.0
+
+        basic_stats = torch.cat([mean, std, skewness, kurtosis], dim=1)  # (batch, 4)
+
+        # ── Histogram (256 bins) ───────────────────────────────────────────────
+        # torch.histc per image — loop is over batch only (fast), not pixels
+        histograms = []
+        for b in range(B):
+            h = torch.histc(flat[b], bins=256, min=0.0, max=1.0)
+            h = h / (h.sum() + 1e-8)    # normalize to probability
+            histograms.append(h)
+        hist_tensor = torch.stack(histograms, dim=0)  # (batch, 256)
+
+        # ── Chi-square statistic (RS test for LSB equalization) ───────────────
+        # Pair adjacent bins: (0,1), (2,3), ...
+        even_bins = hist_tensor[:, 0::2]   # (batch, 128)
+        odd_bins  = hist_tensor[:, 1::2]   # (batch, 128)
+        expected  = (even_bins + odd_bins) / 2.0
+        chi_sq    = ((even_bins - expected).pow(2) / (expected + 1e-8)).sum(dim=1, keepdim=True)
+        chi_sq_norm = torch.log1p(chi_sq) / 10.0      # (batch, 1)
+
+        # ── Entropy ─────────────────────────────────────────────────────────
+        eps = 1e-8
+        entropy = -(hist_tensor * torch.log2(hist_tensor + eps)).sum(dim=1, keepdim=True)  # (batch,1)
+
+        # ── Concatenate all features ────────────────────────────────────────────
+        # [hist(256), chi_sq(1), entropy(1), mean+std+skew+kurt(4)] = 262
+        features = torch.cat([hist_tensor, chi_sq_norm, entropy, basic_stats], dim=1)  # (batch, 262)
+        return features.to(x.device)
 
     def forward(
         self,
@@ -249,7 +291,9 @@ class MultiBranchSteganalyzer(nn.Module):
             branch_c_path: path to saved Branch C .pt file
         """
         if branch_a_path and os.path.exists(branch_a_path):
-            state = torch.load(branch_a_path, map_location="cpu")
+            raw = torch.load(branch_a_path, map_location="cpu")
+            # Support both v1 (bare state_dict) and v2 (metadata dict)
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
             # Branch A was saved as BranchAClassifier — extract backbone weights
             backbone_state = {
                 k.replace("backbone.", ""): v
@@ -265,7 +309,8 @@ class MultiBranchSteganalyzer(nn.Module):
             )
 
         if branch_b_path and os.path.exists(branch_b_path):
-            state = torch.load(branch_b_path, map_location="cpu")
+            raw = torch.load(branch_b_path, map_location="cpu")
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
             backbone_state = {
                 k.replace("backbone.", ""): v
                 for k, v in state.items()
@@ -280,7 +325,8 @@ class MultiBranchSteganalyzer(nn.Module):
             )
 
         if branch_c_path and os.path.exists(branch_c_path):
-            state = torch.load(branch_c_path, map_location="cpu")
+            raw = torch.load(branch_c_path, map_location="cpu")
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
             backbone_state = {
                 k.replace("backbone.", ""): v
                 for k, v in state.items()

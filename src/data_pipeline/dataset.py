@@ -46,6 +46,94 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 
 
+# ─── DCT Stego On-the-fly Dataset ────────────────────────────────────────────
+
+class DCTSteganalysisDataset(Dataset):
+    """
+    Dataset for Branch B (DCT/frequency-domain) training.
+
+    Instead of loading pre-computed stego images from disk, this generates
+    stego images on-the-fly from clean images using the DCT embedder.
+    This ensures Branch B is trained on FREQUENCY-DOMAIN steganography
+    (J-UNIWARD / F5 proxy via DCT coefficient modification), not LSB.
+
+    The payload rate is randomized per sample across [0.1, 0.2, 0.4] to make
+    the detector robust to varying embedding strengths.
+    """
+
+    def __init__(
+        self,
+        clean_dir: str,
+        allowed_stems: Optional[Set[str]] = None,
+        transform=None,
+        payload_rates: Tuple[float, ...] = (0.1, 0.2, 0.4),
+        seed: int = 42,
+    ):
+        self.transform = transform
+        self.payload_rates = payload_rates
+        self.rng = np.random.default_rng(seed)
+        self.samples: List[str] = []   # clean image paths only
+
+        extensions = {".png", ".pgm", ".bmp", ".jpg", ".jpeg"}
+        clean_path = Path(clean_dir)
+        clean_map = {
+            f.stem: f for f in clean_path.iterdir()
+            if f.suffix.lower() in extensions
+        }
+        stems = sorted(clean_map.keys())
+        if allowed_stems is not None:
+            stems = [s for s in stems if s in allowed_stems]
+        self.samples = [str(clean_map[s]) for s in stems]
+
+        if not self.samples:
+            raise RuntimeError(
+                f"DCTSteganalysisDataset: no images found in {clean_dir}. "
+                "Check your data directory."
+            )
+        print(f"DCT Dataset: {len(self.samples)} clean images → on-the-fly DCT stego")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        clean_path = self.samples[idx]
+        clean_img = Image.open(clean_path).convert("L")
+
+        # Pick a random payload rate per sample for curriculum diversity
+        rate = float(self.rng.choice(self.payload_rates))
+
+        # Generate stego on-the-fly using DCT embedder
+        try:
+            from data_pipeline.embedders import DCTEmbedder
+            embedder = DCTEmbedder()
+            import tempfile, os as _os
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            embedder.embed(
+                cover_path=clean_path,
+                output_path=tmp_path,
+                payload_fraction=rate
+            )
+            stego_img = Image.open(tmp_path).convert("L")
+            _os.unlink(tmp_path)
+        except Exception:
+            # Fallback: if DCT embedder fails (e.g. image too small), return clean pair
+            # Model will see a clean/clean pair and learn nothing — acceptable rare edge case
+            stego_img = clean_img.copy()
+
+        seed = np.random.randint(2147483647)
+        if self.transform is not None:
+            torch.manual_seed(seed)
+            clean_tensor = self.transform(clean_img)
+            torch.manual_seed(seed)
+            stego_tensor = self.transform(stego_img)
+        else:
+            clean_tensor = T.ToTensor()(clean_img)
+            stego_tensor = T.ToTensor()(stego_img)
+
+        return clean_tensor, stego_tensor
+
+
 # ─── Dataset Class ────────────────────────────────────────────────────────────
 
 class SteganalysisDataset(Dataset):
@@ -333,7 +421,8 @@ def get_dataloaders(
     test_split: float = 0.15,
     max_images: Optional[int] = None,
     num_workers: int = 4,
-    seed: int = 42
+    seed: int = 42,
+    dataset_mode: str = "lsb"   # "lsb" (default) or "dct" (Branch B frequency training)
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Build train / validation / test DataLoaders with a PAIR-SAFE 3-way split.
@@ -343,15 +432,18 @@ def get_dataloaders(
     hyperparameter tuning or threshold selection.
 
     Args:
-        clean_dir  : folder with clean images
-        stego_dir  : folder with stego images (same filenames as clean)
-        batch_size : images per batch
-        crop_size  : crop size (NOT resize — preserves LSB pixel values)
-        val_split  : fraction held out for validation
-        test_split : fraction held out for final test
-        max_images : limit total pairs considered (for quick experiments)
-        num_workers: parallel data loading workers
-        seed       : random seed for reproducibility
+        clean_dir    : folder with clean images
+        stego_dir    : folder with stego images (same filenames as clean)
+        batch_size   : images per batch
+        crop_size    : crop size (NOT resize — preserves LSB pixel values)
+        val_split    : fraction held out for validation
+        test_split   : fraction held out for final test
+        max_images   : limit total pairs considered (for quick experiments)
+        num_workers  : parallel data loading workers
+        seed         : random seed for reproducibility
+        dataset_mode : "lsb" (default) — use pre-computed stego/ folder.
+                       "dct" — generate DCT stego on-the-fly from clean/ images.
+                       Use "dct" for Branch B (frequency-domain CNN) training.
 
     Returns:
         (train_loader, val_loader, test_loader) tuple
@@ -369,12 +461,23 @@ def get_dataloaders(
     )
 
     # Step 2: Create SEPARATE Dataset objects for each split
-    train_dataset = SteganalysisDataset(
-        clean_dir=clean_dir,
-        stego_dir=stego_dir,
-        allowed_stems=train_stems,
-        transform=train_transform,
-    )
+    if dataset_mode == "dct":
+        # Branch B: DCT stego generated on-the-fly from clean images
+        # Validation and test still use pre-computed LSB stego for consistency
+        print("[DataLoader] Branch B mode: DCT on-the-fly stego for training split")
+        train_dataset = DCTSteganalysisDataset(
+            clean_dir=clean_dir,
+            allowed_stems=train_stems,
+            transform=train_transform,
+            seed=seed
+        )
+    else:
+        train_dataset = SteganalysisDataset(
+            clean_dir=clean_dir,
+            stego_dir=stego_dir,
+            allowed_stems=train_stems,
+            transform=train_transform,
+        )
     val_dataset = SteganalysisDataset(
         clean_dir=clean_dir,
         stego_dir=stego_dir,

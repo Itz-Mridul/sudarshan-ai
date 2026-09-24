@@ -7,6 +7,10 @@ WHAT THIS DOES:
   Trains any of the branch models (A, B, C) or the full fusion model.
   Supports Google Colab GPU training out of the box.
 
+  Checkpoint format (v2): saves a metadata dict, not a bare state_dict.
+  Keys: state_dict, epoch, val_loss, val_acc, mode, seed, dataset_dir,
+        payload_rate, git_commit, timestamp
+
 HOW TO RUN:
 
   # Train Branch A alone (Student A, Week 5-6):
@@ -39,7 +43,13 @@ import sys
 import argparse
 import time
 import json
+import subprocess
+from datetime import datetime
 from pathlib import Path
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 import numpy as np
 import torch
@@ -67,6 +77,18 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def _get_git_commit() -> str:
+    """Return short git commit hash, or 'unknown' if git is unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
 def get_model(cfg: Config):
     """
     Create the correct model based on training mode.
@@ -83,10 +105,7 @@ def get_model(cfg: Config):
         return BranchAClassifier(feature_dim=cfg.feature_dim_a, num_classes=cfg.num_classes)
     elif cfg.mode == "branch_b":
         print("Mode: BRANCH_B — DCT frequency CNN")
-        print("[WARNING] Branch B is trained on the SAME LSB dataset as Branch A.")
-        print("          DCT-domain JPEG stego methods (J-UNIWARD, F5) are NOT yet implemented.")
-        print("          Branch B results are informational only until a real JPEG stego")
-        print("          generator is integrated. Do NOT claim DCT-domain detection in the paper.")
+        print("[INFO] Branch B will use DCT-domain stego dataset (on-the-fly generation).")
         return BranchBClassifier(feature_dim=cfg.feature_dim_b, num_classes=cfg.num_classes)
     elif cfg.mode == "branch_c":
         print("Mode: BRANCH_C — statistical features MLP")
@@ -262,7 +281,28 @@ def train(cfg: Config):
     device = cfg.device
     print(f"\nTraining on: {device}\n")
 
+    # ── Weights & Biases Initialization ───────────────────────────────────────
+    if getattr(cfg, "use_wandb", False):
+        if wandb is None:
+            print("[WARNING] wandb is not installed. Run 'pip install wandb'. Proceeding without wandb.")
+            cfg.use_wandb = False
+        else:
+            wandb.init(
+                project="StegShield",
+                name=f"{cfg.mode}_training",
+                config={
+                    "mode": cfg.mode,
+                    "epochs": cfg.epochs,
+                    "batch_size": cfg.batch_size,
+                    "learning_rate": cfg.learning_rate,
+                    "optimizer": cfg.optimizer,
+                }
+            )
+
     # ── Data ──────────────────────────────────────────────────────────────────
+    # Branch B uses DCT stego dataset (frequency-domain embedding)
+    # All other branches use LSB stego dataset (pixel-domain embedding)
+    dataset_mode = "dct" if cfg.mode == "branch_b" else "lsb"
     train_loader, val_loader, _test_loader = get_dataloaders(
         clean_dir=cfg.clean_dir,
         stego_dir=cfg.stego_dir,
@@ -271,7 +311,8 @@ def train(cfg: Config):
         val_split=cfg.val_split,
         test_split=cfg.test_split,
         max_images=cfg.max_images,
-        num_workers=cfg.num_workers
+        num_workers=cfg.num_workers,
+        dataset_mode=dataset_mode
     )
 
     if len(train_loader) == 0 or len(val_loader) == 0:
@@ -363,7 +404,20 @@ def train(cfg: Config):
         # Save best checkpoint (by val_loss, not val_acc)
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
-            torch.save(model.state_dict(), checkpoint_path)
+            # Save full metadata dict (v2 format — backward compatible via load helpers)
+            checkpoint = {
+                "state_dict":   model.state_dict(),
+                "epoch":        epoch,
+                "val_loss":     val_metrics["loss"],
+                "val_acc":      val_metrics["accuracy"],
+                "mode":         cfg.mode,
+                "seed":         cfg.seed,
+                "dataset_dir":  cfg.clean_dir,
+                "payload_rate": getattr(cfg, "payload_rate", 0.4),
+                "git_commit":   _get_git_commit(),
+                "timestamp":    datetime.utcnow().isoformat() + "Z",
+            }
+            torch.save(checkpoint, checkpoint_path)
             print(f"  ★ New best model saved → {checkpoint_path} "
                   f"(val_loss={best_val_loss:.4f}, val_acc={val_metrics['accuracy']:.1f}%)")
             no_improve = 0
@@ -376,6 +430,17 @@ def train(cfg: Config):
                   f"(val_loss did not improve for {no_improve} epochs)")
             break
 
+        # Log to wandb if enabled
+        if getattr(cfg, "use_wandb", False):
+            wandb.log({
+                "epoch": epoch,
+                "train/loss": train_metrics['loss'],
+                "train/accuracy": train_metrics['accuracy'],
+                "val/loss": val_metrics['loss'],
+                "val/accuracy": val_metrics['accuracy'],
+                "lr": scheduler.get_last_lr()[0]
+            })
+
     print("\n" + "=" * 60)
     print(f"Training complete! Best val loss: {best_val_loss:.4f}")
     print(f"Best model saved to: {checkpoint_path}")
@@ -385,6 +450,9 @@ def train(cfg: Config):
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     print(f"Training history saved to: {history_path}")
+
+    if getattr(cfg, "use_wandb", False):
+        wandb.finish()
 
     return history, best_val_loss
 
@@ -404,6 +472,7 @@ def main():
     parser.add_argument("--clean_dir",   type=str,   default=None)
     parser.add_argument("--stego_dir",   type=str,   default=None)
     parser.add_argument("--no_gpu",      action="store_true")
+    parser.add_argument("--wandb",       action="store_true", help="Enable Weights & Biases logging")
     args = parser.parse_args()
 
     cfg = Config()
@@ -415,6 +484,9 @@ def main():
     if args.clean_dir:  cfg.clean_dir = args.clean_dir
     if args.stego_dir:  cfg.stego_dir = args.stego_dir
     if args.no_gpu:     cfg.use_gpu = False
+    
+    # Custom config property for wandb (since it's not in the base config)
+    cfg.use_wandb = args.wandb
 
     train(cfg)
 

@@ -136,10 +136,12 @@ def main():
 
         if entry["class"] is not None:
             model = entry["class"]()
-            state = torch.load(ckpt, map_location="cpu")
+            raw = torch.load(ckpt, map_location="cpu")
+            # Support v1 (bare state_dict) and v2 (metadata dict with 'state_dict' key)
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
             model.load_state_dict(state)
         else:
-            # Quantized model — use torch.load directly
+            # Quantized model — saved as full object, load directly
             model = torch.load(ckpt, map_location="cpu")
 
         n_params = count_params(model)

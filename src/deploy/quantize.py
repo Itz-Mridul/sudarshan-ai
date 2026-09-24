@@ -60,22 +60,39 @@ class CalibrationDataset(Dataset):
 
     def __getitem__(self, idx):
         img = Image.open(self.paths[idx]).convert("L")
-        img = img.resize((self.image_size, self.image_size), Image.BILINEAR)
-        arr = np.array(img, dtype=np.float32) / 255.0
-        return torch.tensor(arr).unsqueeze(0)   # (1, H, W)
+        # ── CRITICAL: Use IDENTICAL preprocessing as training ─────────────────────
+        # Training uses: CenterCrop(256) + ToTensor + Normalize(0.5, 0.5) -> [-1,1]
+        # Wrong calibration (bilinear resize + [0,1]) causes distribution shift
+        # that invalidates INT8 scale factors. Must match exactly.
+        from torchvision.transforms import CenterCrop, ToTensor, Compose, Normalize
+        transform = Compose([
+            CenterCrop(self.image_size),
+            ToTensor(),
+            Normalize(mean=[0.5], std=[0.5])   # output range: [-1, 1]
+        ])
+        return transform(img)   # (1, H, W)
 
 
 # ─── Quantization ─────────────────────────────────────────────────────────────
 
 def load_model(model_path: str, device: torch.device):
-    """Load the trained fusion model from a .pt checkpoint."""
+    """Load the trained fusion model from a .pt checkpoint.
+    
+    Supports both v1 (bare state_dict) and v2 (metadata dict) checkpoint formats.
+    """
     # Late import to avoid circular dependency
     sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
     from model.fusion_model import MultiBranchSteganalyzer
 
     model = MultiBranchSteganalyzer()
-    state = torch.load(model_path, map_location=device)
+    raw = torch.load(model_path, map_location=device)
+    # v2 checkpoint is a dict with 'state_dict' key; v1 is a bare OrderedDict
+    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
     model.load_state_dict(state)
+    if isinstance(raw, dict) and "state_dict" in raw:
+        print(f"[Load] Checkpoint v2 — epoch={raw.get('epoch','?')}, "
+              f"val_acc={raw.get('val_acc', '?'):.1f}%, "
+              f"git={raw.get('git_commit','?')}")
     model.eval()
     return model.to(device)
 
@@ -212,8 +229,10 @@ def main():
 
     # ── Save quantized model ─────────────────────────────────────────────────
     os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
-    torch.save(int8_model.state_dict(), args.output_path)
-    print(f"\n[4/4] Quantized model saved to: {args.output_path}")
+    # Save the FULL quantized model object (not just state_dict) so it can
+    # be loaded with torch.load() without reconstructing the quantized architecture.
+    torch.save(int8_model, args.output_path)
+    print(f"\n[4/4] Quantized model (full object) saved to: {args.output_path}")
 
     # ── Benchmark INT8 ───────────────────────────────────────────────────────
     print("\n[Benchmark] INT8 model:")

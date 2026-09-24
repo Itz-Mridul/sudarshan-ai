@@ -35,6 +35,19 @@ HOW TO USE:
       }
   )
   print(score_info["report"])
+
+IMPORTANT — PROTOTYPE STATUS:
+  The weights in ScoringWeights are hand-crafted heuristics developed during
+  research. They are NOT based on operational security data, red-team studies,
+  or calibrated false-positive analysis. This module demonstrates the concept
+  and architecture of the risk fusion approach.
+
+  DO NOT use this for autonomous blocking or policy enforcement until:
+    1. Weights are calibrated against real operational transfer logs.
+    2. False-positive rates are measured and accepted by security officers.
+    3. The system is reviewed by a qualified security professional.
+
+  In the demo app, this output is clearly labelled as a PROTOTYPE ESTIMATE.
 """
 
 from __future__ import annotations

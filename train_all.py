@@ -68,6 +68,7 @@ def main():
     parser.add_argument("--max_images",  type=int, default=None, help="Limit images (quick test)")
     parser.add_argument("--skip_done",   action="store_true", help="Skip stages where checkpoint exists")
     parser.add_argument("--start_from",  choices=["a","b","c","fusion","quantize"], default="a")
+    parser.add_argument("--wandb",       action="store_true", help="Enable Weights & Biases logging")
     args = parser.parse_args()
 
     python = sys.executable
@@ -75,6 +76,8 @@ def main():
     if args.max_images:
         base_cmd += ["--max_images", str(args.max_images)]
     base_cmd += ["--epochs", str(args.epochs)]
+    if args.wandb:
+        base_cmd += ["--wandb"]
 
     log(f"StegShield — Full Training Pipeline")
     log(f"Epochs per stage: {args.epochs}")

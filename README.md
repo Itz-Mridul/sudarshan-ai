@@ -35,56 +35,28 @@ A multi-branch deep learning system that detects hidden steganographic content i
 
 ```mermaid
 flowchart TD
-    classDef branchA fill:#ff9999,stroke:#cc0000,stroke-width:2px;
-    classDef branchB fill:#99ccff,stroke:#0066cc,stroke-width:2px;
-    classDef branchC fill:#99ff99,stroke:#009900,stroke-width:2px;
-    classDef fusion fill:#e6ccff,stroke:#6600cc,stroke-width:2px;
-    classDef risk fill:#ffcc99,stroke:#cc6600,stroke-width:2px;
-
-    Input["🖼️ Input Image\n(JPG / PNG / PGM)"]
-
-    subgraph BranchA ["Branch A — Pixel Domain"]
-        A1["SRM Filter Layer\n30 frozen 5×5 kernels"]:::branchA
-        A2["Pixel CNN\n(Conv→BN→ReLU) ×4"]:::branchA
-        A3["256-dim feature"]:::branchA
-        A1 --> A2 --> A3
-    end
-
-    subgraph BranchB ["Branch B — Frequency Domain"]
-        B1["8×8 Block DCT\nCoefficient Map"]:::branchB
-        B2["DCT CNN\n(Conv→BN→ReLU) ×4"]:::branchB
-        B3["256-dim feature"]:::branchB
-        B1 --> B2 --> B3
-    end
-
-    subgraph BranchC ["Branch C — Statistical Domain"]
-        C1["Feature Extractor\nChi-sq + Hist + Moments"]:::branchC
-        C2["Stats MLP\n262→128→64→32"]:::branchC
-        C3["32-dim feature"]:::branchC
-        C1 --> C2 --> C3
-    end
-
-    subgraph FusionLayer ["Fusion Layer"]
-        F1["LayerNorm + Concat\n544-dim"]:::fusion
-        F2["Dense 544→128 → ReLU"]:::fusion
-        F3["Dense 128→64 → ReLU"]:::fusion
-        F4["Dense 64→2 → Softmax"]:::fusion
-        F1 --> F2 --> F3 --> F4
-    end
-
-    subgraph Context ["Defense Context Module"]
-        D["User Privilege · Time · File Size · Destination"]:::risk
-        Risk{{"RISK SCORE: 0–100\nLOW / MEDIUM / HIGH / CRITICAL"}}:::risk
-        D --> Risk
-    end
+    Input["🖼️ Input Image (JPG / PNG / PGM)"]
 
     Input --> A1
     Input --> B1
     Input --> C1
+
+    A1["SRM Filter Layer (30 frozen kernels)"] --> A2["Pixel CNN (Conv→BN→ReLU ×4)"] --> A3["256-dim feature (Pixel)"]
+    
+    B1["8×8 Block DCT Coefficient Map"] --> B2["DCT CNN (Conv→BN→ReLU ×4)"] --> B3["256-dim feature (DCT)"]
+    
+    C1["Feature Extractor (Chi-sq + Hist)"] --> C2["Stats MLP"] --> C3["32-dim feature (Stats)"]
+
     A3 --> F1
     B3 --> F1
     C3 --> F1
-    F4 -- "P(STEGO) + confidence" --> D
+
+    F1["LayerNorm + Concat (544-dim)"] --> F2["Dense 544→128 → ReLU"]
+    F2 --> F3["Dense 128→64 → ReLU"]
+    F3 --> F4["Dense 64→2 → Softmax"]
+    
+    F4 -- "P(STEGO) + confidence" --> D["Defense Context Module (User, Time, Size)"]
+    D --> Risk{{"RISK SCORE: 0–100"}}
 ```
 
 ---
