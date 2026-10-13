@@ -169,6 +169,7 @@ def train_xunet(
     # Data — use FlatDataset which returns (image, label) instead of (clean, stego)
     # The shared SteganalysisDataset returns paired batches; XuNet needs flat labels.
     from data_pipeline.dataset import FlatDataset, split_stems_three_way, get_transforms
+    from utils.checkpoints import extract_state_dict
     from torch.utils.data import DataLoader as _DL
 
     _, val_transform = get_transforms(256)
@@ -271,7 +272,7 @@ def evaluate_xunet(
 
     device = torch.device("cpu")
     model = XuNet(num_classes=2).to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model.load_state_dict(extract_state_dict(torch.load(checkpoint_path, map_location=device)))
     model.eval()
 
     # Use FlatDataset for the held-out test stems

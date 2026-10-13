@@ -27,3 +27,8 @@ tqdm>=4.66.0          # progress bars during training
 pandas>=2.0.0         # results tables
 requests>=2.31.0      # for dataset download scripts
 wandb>=0.15.0         # weights & biases for real-time dashboard
+
+# ── Production API ──────────────────────────────────
+fastapi>=0.104.0      # REST API framework
+uvicorn[standard]>=0.24.0  # ASGI server
+python-multipart>=0.0.6    # file upload support for FastAPI

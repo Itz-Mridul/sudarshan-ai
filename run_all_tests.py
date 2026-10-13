@@ -385,21 +385,33 @@ def test_branch_c():
 
 def test_fusion_model():
     from model.fusion_model import MultiBranchSteganalyzer
-    model = MultiBranchSteganalyzer(feature_dim_a=256, feature_dim_b=256, feature_dim_c=32)
+    model = MultiBranchSteganalyzer(feature_dim_a=256, feature_dim_b=256, feature_dim_c=32, feature_dim_d=128)
     model.eval()
     x = torch.randn(2, 1, 256, 256)
     with torch.no_grad():
-        logits, fa, fb, fc = model(x, return_branch_features=True)
+        out = model(x, return_branch_features=True)
+        assert len(out) == 5
+        logits, fa, fb, fc, fd = out
     assert logits.shape == torch.Size([2, 2])
     assert fa.shape     == torch.Size([2, 256])
     assert fb.shape     == torch.Size([2, 256])
     assert fc.shape     == torch.Size([2, 32])
+    assert fd.shape     == torch.Size([2, 128])
     result = model.predict(x)
     assert all(l in ["CLEAN", "STEGO"] for l in result["label"])
     assert all(0 <= p <= 1 for p in result["confidence"])
     # SRM still frozen inside fusion model
     srm_params = list(model.branch_a.srm.parameters())
     assert all(not p.requires_grad for p in srm_params)
+
+
+def test_checkpoint_metadata_unwrap():
+    """Metadata checkpoints must load like legacy bare state dictionaries."""
+    from utils.checkpoints import extract_state_dict
+    state = {"layer.weight": torch.ones(2, 2)}
+    assert extract_state_dict(state) is state
+    wrapped = {"state_dict": state, "epoch": 3}
+    assert extract_state_dict(wrapped) is state
 
 
 def test_lsb_crop_preserves_pixels():
@@ -427,6 +439,7 @@ if TORCH_AVAILABLE:
     run_test("Branch B: DCT conversion + forward", test_branch_b)
     run_test("Branch C: 262-dim features + MLP forward", test_branch_c)
     run_test("Full Fusion Model: forward + predict()", test_fusion_model)
+    run_test("Metadata and legacy checkpoints unwrap consistently", test_checkpoint_metadata_unwrap)
 
 # This test does NOT need PyTorch
 run_test("CenterCrop preserves exact pixel values (lossless)", test_lsb_crop_preserves_pixels)
@@ -561,8 +574,57 @@ def test_dct_payload_too_large():
         raised = True
     assert raised, "Should raise ValueError for oversized payload"
 
+
+def test_dct_dataset_generates_real_stego_pair():
+    """DCT training must not silently return a clean/clean pair."""
+    from data_pipeline.dataset import DCTSteganalysisDataset
+    with tempfile.TemporaryDirectory() as tmp:
+        clean_dir = os.path.join(tmp, "clean")
+        os.makedirs(clean_dir)
+        arr = np.random.default_rng(4).integers(0, 256, (256, 256), dtype=np.uint8)
+        Image.fromarray(arr).save(os.path.join(clean_dir, "sample.png"))
+        ds = DCTSteganalysisDataset(clean_dir, payload_rates=(0.1,), seed=4)
+        clean, stego = ds[0]
+        assert clean.shape == stego.shape == (1, 256, 256)
+        assert not torch.equal(clean, stego), "DCT dataset produced clean/clean training pair"
+
 run_test("DCT embedder basic functionality", test_dct_embedder_basic)
 run_test("DCT embedder raises ValueError on oversized payload", test_dct_payload_too_large)
+run_test("DCT dataset generates a real stego pair", test_dct_dataset_generates_real_stego_pair)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# GROUP 6 — Forensic Screening Modules
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+print("\n" + "=" * 60)
+print("  [ Group 6 ] Forensic Screening Modules")
+print("=" * 60)
+
+
+def test_rs_screening():
+    from forensics.rs_steganalysis import analyse_rs
+    arr = np.random.default_rng(8).integers(0, 256, (64, 64), dtype=np.uint8)
+    result = analyse_rs(arr)
+    assert 0.0 <= result["screening_score"] <= 1.0
+    assert result["groups"] == (arr.size // 4)
+    assert "finding" in result
+
+
+def test_structural_trailing_data_carving():
+    from forensics.structural_audit import audit_file_structure
+    with tempfile.NamedTemporaryFile(suffix=".png") as f:
+        Image.fromarray(np.zeros((16, 16), dtype=np.uint8)).save(f, format="PNG")
+        f.seek(0)
+        raw = f.read() + b"TRAILING-TEST"
+    result = audit_file_structure(raw, "sample.png")
+    assert result["format"] == "PNG"
+    assert result["has_trailing_data"] is True
+    assert result["trailing_data"] == b"TRAILING-TEST"
+
+
+run_test("RS screening returns bounded evidence", test_rs_screening)
+run_test("PNG trailing bytes are detected and carved", test_structural_trailing_data_carving)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

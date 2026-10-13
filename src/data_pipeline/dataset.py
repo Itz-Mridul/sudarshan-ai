@@ -102,24 +102,24 @@ class DCTSteganalysisDataset(Dataset):
         # Pick a random payload rate per sample for curriculum diversity
         rate = float(self.rng.choice(self.payload_rates))
 
-        # Generate stego on-the-fly using DCT embedder
-        try:
-            from data_pipeline.embedders import DCTEmbedder
-            embedder = DCTEmbedder()
-            import tempfile, os as _os
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp_path = tmp.name
-            embedder.embed(
-                cover_path=clean_path,
-                output_path=tmp_path,
-                payload_fraction=rate
-            )
-            stego_img = Image.open(tmp_path).convert("L")
-            _os.unlink(tmp_path)
-        except Exception:
-            # Fallback: if DCT embedder fails (e.g. image too small), return clean pair
-            # Model will see a clean/clean pair and learn nothing — acceptable rare edge case
-            stego_img = clean_img.copy()
+        # Generate stego on-the-fly using the in-repo DCT embedder. The old
+        # implementation imported data_pipeline.embedders.DCTEmbedder, which
+        # does not exist, then silently returned a clean/clean pair. That made
+        # Branch B train on mislabeled examples without raising an error.
+        from data_pipeline.dct_embedder import embed_dct
+
+        clean_array = np.asarray(clean_img, dtype=np.uint8)
+        # Match create_dct_stego_image's conservative capacity estimate while
+        # ensuring very small images still receive at least one byte.
+        payload_bytes = max(1, int((clean_array.size * 0.1 / 8) * rate))
+        payload_rng = np.random.default_rng(int(self.rng.integers(0, 2**31 - 1)))
+        payload = payload_rng.bytes(payload_bytes)
+        stego_array = embed_dct(
+            clean_array,
+            payload,
+            seed=int(self.rng.integers(0, 2**31 - 1)),
+        )
+        stego_img = Image.fromarray(stego_array, mode="L")
 
         seed = np.random.randint(2147483647)
         if self.transform is not None:

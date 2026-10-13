@@ -53,6 +53,7 @@ from branches.branch_a_pixel import BranchAClassifier
 from branches.branch_b_dct import BranchBClassifier
 from branches.branch_c_stats import BranchCClassifier
 from model.fusion_model import MultiBranchSteganalyzer
+from utils.checkpoints import extract_state_dict
 
 
 # ─── Load Model ───────────────────────────────────────────────────────────────
@@ -74,8 +75,8 @@ def load_model(checkpoint_path: str, mode: str, cfg: Config):
             feature_dim_c=cfg.feature_dim_c
         )
 
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
-    model.load_state_dict(state_dict)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(extract_state_dict(checkpoint))
     model.eval()
     return model
 
@@ -127,15 +128,25 @@ def compute_metrics(labels: np.ndarray, preds: np.ndarray, stego_probs: np.ndarr
     Compute all evaluation metrics for the paper.
     Includes: Accuracy, Precision, Recall, F1, AUC, FPR, FNR.
     """
+    if len(labels) == 0:
+        raise ValueError("Cannot compute metrics for an empty evaluation set")
+
     acc       = accuracy_score(labels, preds) * 100
     precision = precision_score(labels, preds, average="binary", zero_division=0) * 100
     recall    = recall_score(labels, preds, average="binary", zero_division=0) * 100
     f1        = f1_score(labels, preds, average="binary", zero_division=0) * 100
 
-    fpr_curve, tpr_curve, _ = roc_curve(labels, stego_probs)
-    roc_auc                  = auc(fpr_curve, tpr_curve) * 100
+    if np.unique(labels).size == 2:
+        fpr_curve, tpr_curve, _ = roc_curve(labels, stego_probs)
+        roc_auc = auc(fpr_curve, tpr_curve) * 100
+    else:
+        # ROC-AUC is undefined when an evaluation set contains only one class.
+        # Return a valid, explicit value instead of crashing during reporting.
+        fpr_curve = np.array([0.0, 1.0])
+        tpr_curve = np.array([0.0, 1.0])
+        roc_auc = float("nan")
 
-    cm = confusion_matrix(labels, preds)
+    cm = confusion_matrix(labels, preds, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
 
     # False Positive Rate = FP / (FP + TN) = fraction of clean flagged as stego

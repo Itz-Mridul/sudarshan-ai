@@ -64,7 +64,9 @@ from data_pipeline.dataset import get_dataloaders
 from branches.branch_a_pixel import BranchAClassifier
 from branches.branch_b_dct import BranchBClassifier
 from branches.branch_c_stats import BranchCClassifier
+from branches.branch_d_generative import BranchDClassifier
 from model.fusion_model import MultiBranchSteganalyzer
+from utils.checkpoints import extract_state_dict
 
 
 # ─── Training Loop ────────────────────────────────────────────────────────────
@@ -110,19 +112,24 @@ def get_model(cfg: Config):
     elif cfg.mode == "branch_c":
         print("Mode: BRANCH_C — statistical features MLP")
         return BranchCClassifier(feature_dim=cfg.feature_dim_c, num_classes=cfg.num_classes)
+    elif cfg.mode == "branch_d":
+        print("Mode: BRANCH_D — generative AI detector (EfficientNet)")
+        return BranchDClassifier(feature_dim=cfg.feature_dim_d, num_classes=cfg.num_classes)
     elif cfg.mode == "fusion":
         # Stage 2: load pretrained branches and FREEZE them
         model = MultiBranchSteganalyzer(
             feature_dim_a=cfg.feature_dim_a,
             feature_dim_b=cfg.feature_dim_b,
             feature_dim_c=cfg.feature_dim_c,
+            feature_dim_d=cfg.feature_dim_d,
             num_classes=cfg.num_classes
         )
         # load_pretrained_branches raises FileNotFoundError if any checkpoint is missing
         model.load_pretrained_branches(
             branch_a_path=os.path.join(cfg.checkpoint_dir, cfg.branch_a_name),
             branch_b_path=os.path.join(cfg.checkpoint_dir, cfg.branch_b_name),
-            branch_c_path=os.path.join(cfg.checkpoint_dir, cfg.branch_c_name)
+            branch_c_path=os.path.join(cfg.checkpoint_dir, cfg.branch_c_name),
+            branch_d_path=os.path.join(cfg.checkpoint_dir, cfg.branch_d_name)
         )
         # FREEZE all branch parameters — only the fusion head is trained
         for param in model.branch_a.parameters():
@@ -130,6 +137,8 @@ def get_model(cfg: Config):
         for param in model.branch_b.parameters():
             param.requires_grad = False
         for param in model.branch_c.parameters():
+            param.requires_grad = False
+        for param in model.branch_d.parameters():
             param.requires_grad = False
         frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -143,13 +152,14 @@ def get_model(cfg: Config):
             feature_dim_a=cfg.feature_dim_a,
             feature_dim_b=cfg.feature_dim_b,
             feature_dim_c=cfg.feature_dim_c,
+            feature_dim_d=cfg.feature_dim_d,
             num_classes=cfg.num_classes
         )
         # Optionally load the fusion checkpoint if it exists
         fusion_ckpt = os.path.join(cfg.checkpoint_dir, cfg.best_model_name)
         if os.path.exists(fusion_ckpt):
             state = torch.load(fusion_ckpt, map_location="cpu")
-            model.load_state_dict(state)
+            model.load_state_dict(extract_state_dict(state))
             print(f"Mode: JOINT — loaded fusion checkpoint from {fusion_ckpt}")
             print("  All parameters unfrozen for end-to-end fine-tuning.")
         else:
@@ -158,7 +168,7 @@ def get_model(cfg: Config):
         return model
     else:
         raise ValueError(f"Unknown mode: {cfg.mode}. "
-                         f"Choose from: branch_a, branch_b, branch_c, fusion, joint")
+                         f"Choose from: branch_a, branch_b, branch_c, branch_d, fusion, joint")
 
 
 def get_checkpoint_name(cfg: Config) -> str:
@@ -166,6 +176,7 @@ def get_checkpoint_name(cfg: Config) -> str:
         "branch_a": cfg.branch_a_name,
         "branch_b": cfg.branch_b_name,
         "branch_c": cfg.branch_c_name,
+        "branch_d": cfg.branch_d_name,
         "fusion":   cfg.best_model_name,
         "joint":    cfg.best_model_name,
     }
@@ -373,12 +384,22 @@ def train(cfg: Config):
     no_improve = 0
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
     checkpoint_path = get_checkpoint_name(cfg)
+    start_epoch = 1
 
-    print(f"\nStarting training for {cfg.epochs} epochs...")
+    if getattr(cfg, "resume", False) and os.path.exists(checkpoint_path):
+        print(f"🔄 Resuming from existing checkpoint: {checkpoint_path}")
+        raw = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(extract_state_dict(raw))
+        if isinstance(raw, dict):
+            start_epoch = raw.get("epoch", 0) + 1
+            best_val_loss = raw.get("val_loss", float("inf"))
+            print(f"   Resumed at epoch {start_epoch} (previous best val loss: {best_val_loss:.4f})")
+
+    print(f"\nStarting training for {cfg.epochs} epochs (starting at {start_epoch})...")
     print(f"Early stopping: patience={cfg.early_stop_patience} epochs (monitors val_loss)")
     print("-" * 60)
 
-    for epoch in range(1, cfg.epochs + 1):
+    for epoch in range(start_epoch, cfg.epochs + 1):
         t0 = time.time()
 
         # Train
@@ -462,7 +483,7 @@ def train(cfg: Config):
 def main():
     parser = argparse.ArgumentParser(description="Train steganography detection model")
     parser.add_argument("--mode", default="fusion",
-                        choices=["branch_a", "branch_b", "branch_c", "fusion", "joint"],
+                        choices=["branch_a", "branch_b", "branch_c", "branch_d", "fusion", "joint"],
                         help="Which model to train")
     parser.add_argument("--epochs",      type=int,   default=None)
     parser.add_argument("--batch_size",  type=int,   default=None)
@@ -473,6 +494,7 @@ def main():
     parser.add_argument("--stego_dir",   type=str,   default=None)
     parser.add_argument("--no_gpu",      action="store_true")
     parser.add_argument("--wandb",       action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--resume",      action="store_true", help="Resume from existing checkpoint if available")
     args = parser.parse_args()
 
     cfg = Config()
@@ -484,6 +506,7 @@ def main():
     if args.clean_dir:  cfg.clean_dir = args.clean_dir
     if args.stego_dir:  cfg.stego_dir = args.stego_dir
     if args.no_gpu:     cfg.use_gpu = False
+    cfg.resume = args.resume
     
     # Custom config property for wandb (since it's not in the base config)
     cfg.use_wandb = args.wandb

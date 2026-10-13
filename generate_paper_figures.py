@@ -45,6 +45,7 @@ from branches.branch_a_pixel import BranchAClassifier
 from branches.branch_b_dct import BranchBClassifier
 from branches.branch_c_stats import BranchCClassifier
 from model.fusion_model import MultiBranchSteganalyzer
+from utils.checkpoints import extract_state_dict
 
 OUT_DIR = ROOT / "results" / "paper_figures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -87,7 +88,7 @@ def load_model(checkpoint: str, mode: str, cfg: Config):
             feature_dim_c=cfg.feature_dim_c,
         )
     state = torch.load(checkpoint, map_location="cpu")
-    m.load_state_dict(state)
+    m.load_state_dict(extract_state_dict(state))
     m.eval()
     return m
 

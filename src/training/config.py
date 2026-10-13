@@ -29,6 +29,7 @@ class Config:
     feature_dim_a: int    = 256        # Branch A output feature size
     feature_dim_b: int    = 256        # Branch B output feature size
     feature_dim_c: int    = 32         # Branch C output feature size (smaller)
+    feature_dim_d: int    = 128        # Branch D output feature size (EfficientNet)
     num_classes: int      = 2          # 0=clean, 1=stego
 
     # ── Training ──────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ class Config:
     branch_a_name: str    = "branch_a_best.pt"
     branch_b_name: str    = "branch_b_best.pt"
     branch_c_name: str    = "branch_c_best.pt"
+    branch_d_name: str    = "branch_d_best.pt"
 
     # ── Reproducibility ───────────────────────────────────────────────────────
     seed: int             = 42
@@ -57,6 +59,7 @@ class Config:
     # "branch_a"  : train Branch A alone
     # "branch_b"  : train Branch B alone
     # "branch_c"  : train Branch C alone
+    # "branch_d"  : train Branch D alone (Generative AI)
     # "fusion"    : train full fusion model (needs branches trained first)
     # "joint"     : train all branches + fusion together end-to-end
     mode: str             = "fusion"
@@ -81,7 +84,7 @@ class Config:
     @property
     def fusion_input_dim(self) -> int:
         """Total feature vector size entering the fusion layer."""
-        return self.feature_dim_a + self.feature_dim_b + self.feature_dim_c
+        return self.feature_dim_a + self.feature_dim_b + self.feature_dim_c + self.feature_dim_d
 
     def summary(self):
         dev = self.device

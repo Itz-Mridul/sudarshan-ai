@@ -82,8 +82,8 @@ def image_to_dct_tensor(image_tensor: torch.Tensor) -> torch.Tensor:
     dct_batch = []
 
     for b in range(batch_size):
-        # Convert to numpy, range [0, 255]
-        img_np = image_tensor[b, 0].cpu().numpy()
+        # Convert to numpy, range [0, 255]. Use detach() for Grad-CAM compatibility.
+        img_np = image_tensor[b, 0].detach().cpu().numpy()
         img_np = (img_np + 1.0) * 127.5   # [-1,1] → [0,255]
 
         # Compute block DCT

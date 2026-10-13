@@ -44,6 +44,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from branches.branch_a_pixel import PixelCNN
 from branches.branch_b_dct import FrequencyCNN, image_to_dct_tensor
 from branches.branch_c_stats import StatisticsMLP, FEATURE_DIM
+from branches.branch_d_generative import GenerativeDetectorCNN
+from model.cross_attention_fusion import CrossAttentionFusion
 # Note: numpy import removed — Branch C stats are now computed in pure PyTorch
 
 
@@ -115,7 +117,9 @@ class MultiBranchSteganalyzer(nn.Module):
         feature_dim_a: int = 256,
         feature_dim_b: int = 256,
         feature_dim_c: int = 32,
-        num_classes: int = 2
+        feature_dim_d: int = 128,
+        num_classes: int = 2,
+        fusion_type: str = "dense",
     ):
         """
         Args:
@@ -123,27 +127,48 @@ class MultiBranchSteganalyzer(nn.Module):
             feature_dim_b : Branch B output size (DCT CNN)
             feature_dim_c : Branch C output size (stats MLP)
             num_classes   : 2 = clean/stego
+            fusion_type   : 'dense' (original Linear layers) or
+                            'cross_attention' (Transformer Cross-Attention)
         """
         super().__init__()
 
-        # ── Three Branches ────────────────────────────────────────────────────
+        self.fusion_type = fusion_type
+
+        # ── Four Branches ────────────────────────────────────────────────────
         self.branch_a = PixelCNN(feature_dim=feature_dim_a)
         self.branch_b = FrequencyCNN(feature_dim=feature_dim_b)
         self.branch_c = StatisticsMLP(input_dim=FEATURE_DIM, feature_dim=feature_dim_c)
+        self.branch_d = GenerativeDetectorCNN(feature_dim=feature_dim_d)
 
-        # ── Fusion Layer ──────────────────────────────────────────────────────
-        fusion_input = feature_dim_a + feature_dim_b + feature_dim_c
-        self.fusion = FusionLayer(input_dim=fusion_input, num_classes=num_classes)
+        # ── Fusion Layer (selectable) ─────────────────────────────────────────
+        if fusion_type == "cross_attention":
+            self.fusion = CrossAttentionFusion(
+                dim_a=feature_dim_a,
+                dim_b=feature_dim_b,
+                dim_c=feature_dim_c,
+                # Note: Cross-attention fusion currently only takes 3 branches
+                d_model=128,
+                n_heads=4,
+                n_layers=2,
+                dropout=0.15,
+                num_classes=num_classes,
+            )
+        else:
+            # Original dense fusion (default, backward-compatible)
+            fusion_input = feature_dim_a + feature_dim_b + feature_dim_c + feature_dim_d
+            self.fusion = FusionLayer(input_dim=fusion_input, num_classes=num_classes)
         
         # ── Layer Norms (CRITICAL) ────────────────────────────────────────────
         self.norm_a = nn.LayerNorm(feature_dim_a)
         self.norm_b = nn.LayerNorm(feature_dim_b)
         self.norm_c = nn.LayerNorm(feature_dim_c)
+        self.norm_d = nn.LayerNorm(feature_dim_d)
 
         # Store dims for reference
         self.feature_dim_a = feature_dim_a
         self.feature_dim_b = feature_dim_b
         self.feature_dim_c = feature_dim_c
+        self.feature_dim_d = feature_dim_d
 
     def _get_branch_c_features(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -228,6 +253,12 @@ class MultiBranchSteganalyzer(nn.Module):
         # ── Branch C: Statistical features ───────────────────────────────────
         stat_tensor = self._get_branch_c_features(x)    # (batch, 262)
         feat_c = self.branch_c(stat_tensor)              # (batch, 32)
+        
+        # ── Branch D: Generative AI features ─────────────────────────────────
+        # Note: EfficientNet usually requires 3 channels. Since our images are 
+        # grayscale, we duplicate the channel to make it RGB-compatible.
+        x_rgb = x.repeat(1, 3, 1, 1) if x.size(1) == 1 else x
+        feat_d = self.branch_d(x_rgb)                    # (batch, 128)
 
         # ── Layer Normalization (CRITICAL!) ───────────────────────────────────
         # Using LayerNorm instead of L2 normalization to prevent NaN errors 
@@ -235,16 +266,20 @@ class MultiBranchSteganalyzer(nn.Module):
         feat_a_norm = self.norm_a(feat_a)               # (batch, 256)
         feat_b_norm = self.norm_b(feat_b)               # (batch, 256)
         feat_c_norm = self.norm_c(feat_c)               # (batch, 32)
-
-        # ── Concatenate ───────────────────────────────────────────────────────
-        combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm], dim=1)
-        # Shape: (batch, 256+256+32) = (batch, 544)
+        feat_d_norm = self.norm_d(feat_d)               # (batch, 128)
 
         # ── Fusion Layer → Final Prediction ──────────────────────────────────
-        logits = self.fusion(combined)                   # (batch, 2)
+        if self.fusion_type == "cross_attention":
+            # Cross-Attention takes separate branch features (A, B, C for now)
+            logits = self.fusion(feat_a_norm, feat_b_norm, feat_c_norm)
+        else:
+            # Dense fusion: concatenate then feed through linear layers
+            combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm, feat_d_norm], dim=1)
+            # Shape: (batch, 256+256+32+128) = (batch, 672)
+            logits = self.fusion(combined)                   # (batch, 2)
 
         if return_branch_features:
-            return logits, feat_a, feat_b, feat_c
+            return logits, feat_a, feat_b, feat_c, feat_d
 
         return logits
 
@@ -279,7 +314,8 @@ class MultiBranchSteganalyzer(nn.Module):
         self,
         branch_a_path: str = None,
         branch_b_path: str = None,
-        branch_c_path: str = None
+        branch_c_path: str = None,
+        branch_d_path: str = None
     ):
         """
         Load individually trained branch weights into the fusion model.
@@ -289,6 +325,7 @@ class MultiBranchSteganalyzer(nn.Module):
             branch_a_path: path to saved Branch A .pt file
             branch_b_path: path to saved Branch B .pt file
             branch_c_path: path to saved Branch C .pt file
+            branch_d_path: path to saved Branch D .pt file
         """
         if branch_a_path and os.path.exists(branch_a_path):
             raw = torch.load(branch_a_path, map_location="cpu")
@@ -340,6 +377,22 @@ class MultiBranchSteganalyzer(nn.Module):
                 "Train Branch C first: python src/training/train.py --mode branch_c"
             )
 
+        if branch_d_path and os.path.exists(branch_d_path):
+            raw = torch.load(branch_d_path, map_location="cpu")
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
+            backbone_state = {
+                k.replace("backbone.", ""): v
+                for k, v in state.items()
+                if k.startswith("backbone.")
+            }
+            self.branch_d.load_state_dict(backbone_state, strict=False)
+            print(f"✅ Branch D weights loaded from {branch_d_path}")
+        elif branch_d_path:
+            raise FileNotFoundError(
+                f"Branch D checkpoint not found: {branch_d_path}\n"
+                "Train Branch D first: python src/training/train.py --mode branch_d"
+            )
+
 
 
 # ─── Quick Test ───────────────────────────────────────────────────────────────
@@ -353,19 +406,21 @@ if __name__ == "__main__":
     model = MultiBranchSteganalyzer(
         feature_dim_a=256,
         feature_dim_b=256,
-        feature_dim_c=32
+        feature_dim_c=32,
+        feature_dim_d=128
     )
     model.eval()
 
     # Test forward pass
     with torch.no_grad():
-        logits, fa, fb, fc = model(batch, return_branch_features=True)
+        logits, fa, fb, fc, fd = model(batch, return_branch_features=True)
 
     print(f"\nInput shape:     {batch.shape}")
     print(f"Branch A output: {fa.shape}   (pixel features)")
     print(f"Branch B output: {fb.shape}   (DCT features)")
     print(f"Branch C output: {fc.shape}    (stat features)")
-    print(f"Fusion input:    {fa.shape[1]+fb.shape[1]+fc.shape[1]}-dim concatenated vector")
+    print(f"Branch D output: {fd.shape}   (generative AI features)")
+    print(f"Fusion input:    {fa.shape[1]+fb.shape[1]+fc.shape[1]+fd.shape[1]}-dim concatenated vector")
     print(f"Final output:    {logits.shape}     (batch, 2 classes)")
 
     # Test predict()

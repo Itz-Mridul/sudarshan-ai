@@ -29,6 +29,7 @@ from branches.branch_a_pixel import BranchAClassifier
 from branches.branch_b_dct import BranchBClassifier
 from branches.branch_c_stats import BranchCClassifier
 from model.fusion_model import MultiBranchSteganalyzer
+from utils.checkpoints import extract_state_dict
 
 # Always benchmark on CPU (deployment target)
 DEVICE = torch.device("cpu")
@@ -138,8 +139,7 @@ def main():
             model = entry["class"]()
             raw = torch.load(ckpt, map_location="cpu")
             # Support v1 (bare state_dict) and v2 (metadata dict with 'state_dict' key)
-            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
-            model.load_state_dict(state)
+            model.load_state_dict(extract_state_dict(raw))
         else:
             # Quantized model — saved as full object, load directly
             model = torch.load(ckpt, map_location="cpu")

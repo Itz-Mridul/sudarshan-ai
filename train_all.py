@@ -67,7 +67,7 @@ def main():
     parser.add_argument("--epochs",      type=int, default=50, help="Epochs per branch")
     parser.add_argument("--max_images",  type=int, default=None, help="Limit images (quick test)")
     parser.add_argument("--skip_done",   action="store_true", help="Skip stages where checkpoint exists")
-    parser.add_argument("--start_from",  choices=["a","b","c","fusion","quantize"], default="a")
+    parser.add_argument("--start_from",  choices=["a","b","c","d","fusion","quantize"], default="a")
     parser.add_argument("--wandb",       action="store_true", help="Enable Weights & Biases logging")
     args = parser.parse_args()
 
@@ -107,6 +107,13 @@ def main():
             "target": "≥68% val accuracy",
         },
         {
+            "id": "d",
+            "name": "Branch D — Generative AI Detector (EfficientNet)",
+            "cmd": base_cmd + ["--mode", "branch_d"],
+            "checkpoint": "weights/branch_d_best.pt",
+            "target": "≥85% val accuracy",
+        },
+        {
             "id": "fusion",
             "name": "Fusion — LayerNorm + Dense Classifier",
             "cmd": base_cmd + ["--mode", "fusion"],
@@ -115,7 +122,7 @@ def main():
         },
     ]
 
-    order = ["a", "b", "c", "fusion"]
+    order = ["a", "b", "c", "d", "fusion"]
     start_idx = order.index(args.start_from) if args.start_from in order else 0
 
     results = {}

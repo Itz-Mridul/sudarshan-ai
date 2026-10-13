@@ -34,6 +34,7 @@ from PIL import Image
 import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from utils.checkpoints import extract_state_dict
 
 
 # ─── Calibration Dataset ──────────────────────────────────────────────────────
@@ -87,8 +88,7 @@ def load_model(model_path: str, device: torch.device):
     model = MultiBranchSteganalyzer()
     raw = torch.load(model_path, map_location=device)
     # v2 checkpoint is a dict with 'state_dict' key; v1 is a bare OrderedDict
-    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
-    model.load_state_dict(state)
+    model.load_state_dict(extract_state_dict(raw))
     if isinstance(raw, dict) and "state_dict" in raw:
         print(f"[Load] Checkpoint v2 — epoch={raw.get('epoch','?')}, "
               f"val_acc={raw.get('val_acc', '?'):.1f}%, "

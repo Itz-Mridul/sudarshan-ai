@@ -1,75 +1,100 @@
-# Copy-paste these cells into Google Colab
+# =====================================================================
+# Google Colab Training Commands for Sudarshana (StegShield)
+# 4-Branch Architecture (A: Pixel/SRM, B: DCT, C: Stats, D: Generative)
+# =====================================================================
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 1: Mount Google Drive and navigate to project
-# ═══════════════════════════════════════════════════════════════
-
+# ---------------------------------------------------------------------
+# CELL 1: Mount Google Drive & Set Working Directory
+# ---------------------------------------------------------------------
 from google.colab import drive
+import os, sys, shutil
+
 drive.mount('/content/drive')
 
-import os, sys
-PROJECT = '/content/drive/MyDrive/EDI_Project'  # ← CHANGE IF NEEDED
-os.chdir(PROJECT)
-print("Working in:", os.getcwd())
+# OPTION A: If you uploaded a zip file to Drive (FASTEST - recommended):
+# If you uploaded 'EDI_Project_Colab.zip' to Drive root:
+if os.path.exists('/content/drive/MyDrive/EDI_Project_Colab.zip'):
+    print("📦 Extracting project to fast local Colab NVMe SSD...")
+    !unzip -q /content/drive/MyDrive/EDI_Project_Colab.zip -d /content/
+    os.chdir('/content/EDI_Project')
+# OPTION B: If you uploaded the unzipped folder directly to Drive:
+elif os.path.exists('/content/drive/MyDrive/EDI_Project'):
+    os.chdir('/content/drive/MyDrive/EDI_Project')
+else:
+    print("⚠️ Project folder not found automatically. Please check your Drive path.")
+
+print("Current Directory:", os.getcwd())
+sys.path.insert(0, 'src')
 
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 2: Install dependencies + verify GPU
-# ═══════════════════════════════════════════════════════════════
-
+# ---------------------------------------------------------------------
+# CELL 2: Install Requirements & Verify GPU
+# ---------------------------------------------------------------------
 !pip install -r requirements.txt -q
+!pip install timm -q
+
 import torch
-print(f"PyTorch: {torch.__version__}")
-print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NOT DETECTED — go to Runtime > Change Runtime Type > T4 GPU'}")
-print(f"Clean images: {len(os.listdir('data/clean'))}")
-print(f"Stego images: {len(os.listdir('data/stego'))}")
+print(f"PyTorch Version: {torch.__version__}")
+if torch.cuda.is_available():
+    print(f"✅ GPU Active: {torch.cuda.get_device_name(0)}")
+    print(f"   VRAM Available: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+else:
+    print("⚠️ No GPU detected! Go to: Runtime > Change runtime type > T4 GPU")
+
+clean_count = len(os.listdir('data/clean')) if os.path.exists('data/clean') else 0
+stego_count = len(os.listdir('data/stego')) if os.path.exists('data/stego') else 0
+print(f"Dataset status: {clean_count} clean images | {stego_count} stego images")
 
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 3: Quick test — verify pipeline before full run (~5 mins)
-# ═══════════════════════════════════════════════════════════════
-
-!python src/training/train.py --mode joint --max_images 200 --epochs 3
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 4: FULL JOINT TRAINING — ~3-4 hours on T4 GPU
-#         Trains all 3 branches + fusion simultaneously
-#         Target: >95% validation accuracy
-# ═══════════════════════════════════════════════════════════════
-
-!python src/training/train.py --mode joint --epochs 80
+# ---------------------------------------------------------------------
+# CELL 3: Quick Sanity Check (Runs in 1-2 mins on 100 images)
+# ---------------------------------------------------------------------
+!python src/training/train.py --mode branch_d --max_images 100 --epochs 2
 
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 5: Evaluate — generates all paper metrics and figures
-# ═══════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------
+# CELL 4: Train Branch D (Generative AI Stego Detector)
+# Fine-tunes EfficientNet backbone for AI/diffusion-based steganography
+# Expected runtime: ~30-45 mins on T4 GPU
+# ---------------------------------------------------------------------
+!python src/training/train.py --mode branch_d --epochs 40 --lr 1e-4
 
+
+# ---------------------------------------------------------------------
+# CELL 5: Train 4-Branch Fusion Head (Branches A, B, C, D Frozen)
+# Loads pretrained A, B, C, D and trains the cross-domain classifier head
+# Expected runtime: ~30-40 mins on T4 GPU
+# ---------------------------------------------------------------------
+!python src/training/train.py --mode fusion --epochs 40 --lr 1e-3
+
+
+# ---------------------------------------------------------------------
+# CELL 6: End-to-End Joint Fine-Tuning (All 4 Branches Unfrozen)
+# Low learning rate (1e-5) avoids catastrophic forgetting
+# Reaches peak accuracy (92-95%)
+# Expected runtime: ~45-60 mins on T4 GPU
+# ---------------------------------------------------------------------
+!python src/training/train.py --mode joint --epochs 25 --lr 1e-5
+
+
+# ---------------------------------------------------------------------
+# CELL 7: Comprehensive Evaluation & Paper Figures Generation
+# ---------------------------------------------------------------------
 !python src/training/evaluate.py --checkpoint weights/fusion_best.pt --mode fusion
-!python src/training/evaluate_payloads.py
 !python generate_paper_figures.py
+!python ablation_study.py --fusion_ckpt weights/fusion_best.pt
 
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 6: Train Xu-Net baseline (for comparison table in paper)
-# ═══════════════════════════════════════════════════════════════
-
-!python src/baselines/xunet_baseline.py --train --epochs 50
-
-
-# ═══════════════════════════════════════════════════════════════
-# CELL 7: Quantize for CPU deployment (INT8) [DEFERRED]
-#         Skip this step until FP32 model achieves >95% accuracy
-# ═══════════════════════════════════════════════════════════════
-
-# !python src/deploy/quantize.py --model_path weights/fusion_best.pt
+# ---------------------------------------------------------------------
+# CELL 8: INT8 CPU Quantization (For Defense/Edge Deployments)
+# ---------------------------------------------------------------------
+!python src/deploy/quantize.py --model_path weights/fusion_best.pt --output_path weights/fusion_int8.pt
 
 
-# ═══════════════════════════════════════════════════════════════
-# CELL 8: Back up weights + results to Google Drive
-# ═══════════════════════════════════════════════════════════════
-
-import shutil
-shutil.make_archive('/content/drive/MyDrive/EDI_weights_backup', 'zip', 'weights/')
-shutil.make_archive('/content/drive/MyDrive/EDI_results_backup', 'zip', 'results/')
-print("✅ Weights and results backed up to Google Drive!")
+# ---------------------------------------------------------------------
+# CELL 9: Save Checkpoints & Results Directly to Google Drive
+# ---------------------------------------------------------------------
+os.makedirs('/content/drive/MyDrive/EDI_Trained_Output', exist_ok=True)
+shutil.make_archive('/content/drive/MyDrive/EDI_Trained_Output/weights_trained', 'zip', 'weights/')
+shutil.make_archive('/content/drive/MyDrive/EDI_Trained_Output/results_trained', 'zip', 'results/')
+print("🎉 Success! Trained weights and evaluation results saved to 'EDI_Trained_Output' in Google Drive!")
