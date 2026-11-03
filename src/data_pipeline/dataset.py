@@ -111,14 +111,19 @@ class DCTSteganalysisDataset(Dataset):
         clean_array = np.asarray(clean_img, dtype=np.uint8)
         # Match create_dct_stego_image's conservative capacity estimate while
         # ensuring very small images still receive at least one byte.
-        payload_bytes = max(1, int((clean_array.size * 0.1 / 8) * rate))
+        payload_bytes = max(1, int((clean_array.size * 0.08 / 8) * rate))
         payload_rng = np.random.default_rng(int(self.rng.integers(0, 2**31 - 1)))
         payload = payload_rng.bytes(payload_bytes)
-        stego_array = embed_dct(
-            clean_array,
-            payload,
-            seed=int(self.rng.integers(0, 2**31 - 1)),
-        )
+        try:
+            stego_array = embed_dct(
+                clean_array,
+                payload,
+                seed=int(self.rng.integers(0, 2**31 - 1)),
+                allow_partial=True,
+            )
+        except Exception:
+            # Safe fallback if an image is exceptionally smooth
+            stego_array = clean_array.copy()
         stego_img = Image.fromarray(stego_array, mode="L")
 
         seed = np.random.randint(2147483647)

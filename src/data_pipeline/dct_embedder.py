@@ -43,14 +43,20 @@ def apply_2d_idct(block: np.ndarray) -> np.ndarray:
     return idct(idct(block.T, norm='ortho').T, norm='ortho')
 
 
-def embed_dct(image_array: np.ndarray, payload: bytes, seed: int = 42) -> np.ndarray:
+def embed_dct(
+    image_array: np.ndarray,
+    payload: bytes,
+    seed: int = 42,
+    allow_partial: bool = False
+) -> np.ndarray:
     """
     Simulates JSteg / F5 JPEG-domain steganography.
     
     Args:
-        image_array : 2D numpy array of shape (H, W), dtype uint8.
-        payload     : raw bytes to embed.
-        seed        : random seed to optionally scramble embedding order.
+        image_array   : 2D numpy array of shape (H, W), dtype uint8.
+        payload       : raw bytes to embed.
+        seed          : random seed to optionally scramble embedding order.
+        allow_partial : if True, embeds up to available non-zero AC capacity.
         
     Returns:
         stego_img   : 2D numpy array of the same shape, dtype uint8.
@@ -112,7 +118,7 @@ def embed_dct(image_array: np.ndarray, payload: bytes, seed: int = 42) -> np.nda
             # IDCT
             stego_img[i:i+8, j:j+8] = apply_2d_idct(dct_recon)
             
-    if bit_idx < bit_len:
+    if bit_idx < bit_len and not allow_partial:
         raise ValueError(f"Payload too large. Embedded {bit_idx}/{bit_len} bits. Use a larger image or smaller payload.")
         
     # Unshift pixels back to 0-255 range and clip
