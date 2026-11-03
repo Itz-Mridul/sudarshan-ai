@@ -32,6 +32,7 @@ USAGE:
 
 import os
 import sys
+import json
 import argparse
 import time
 from datetime import datetime
@@ -60,17 +61,23 @@ class AblatedModel(nn.Module):
         disable_a: bool = False,
         disable_b: bool = False,
         disable_c: bool = False,
+        disable_d: bool = False,
     ):
         super().__init__()
         self.model = base_model
         self.disable_a = disable_a
         self.disable_b = disable_b
         self.disable_c = disable_c
+        self.disable_d = disable_d
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Get branch features using the base model's internal methods
         features_out = self.model(x, return_branch_features=True)
         logits = features_out[0]
-        feat_a, feat_b, feat_c = features_out[1], features_out[2], features_out[3]
+        feat_a = features_out[1]
+        feat_b = features_out[2]
+        feat_c = features_out[3]
+        feat_d = features_out[4] if len(features_out) > 4 else None
 
         # Zero out disabled branches
         if self.disable_a:
@@ -79,17 +86,23 @@ class AblatedModel(nn.Module):
             feat_b = torch.zeros_like(feat_b)
         if self.disable_c:
             feat_c = torch.zeros_like(feat_c)
+        if self.disable_d and feat_d is not None:
+            feat_d = torch.zeros_like(feat_d)
 
         # Re-normalize
         feat_a_norm = self.model.norm_a(feat_a)
         feat_b_norm = self.model.norm_b(feat_b)
         feat_c_norm = self.model.norm_c(feat_c)
+        feat_d_norm = self.model.norm_d(feat_d) if feat_d is not None else None
 
         # Re-fuse
         if self.model.fusion_type == "cross_attention":
             logits = self.model.fusion(feat_a_norm, feat_b_norm, feat_c_norm)
         else:
-            combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm], dim=1)
+            if feat_d_norm is not None:
+                combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm, feat_d_norm], dim=1)
+            else:
+                combined = torch.cat([feat_a_norm, feat_b_norm, feat_c_norm], dim=1)
             logits = self.model.fusion(combined)
 
         return logits
@@ -98,13 +111,14 @@ class AblatedModel(nn.Module):
 # ─── Ablation Configurations ─────────────────────────────────────────────────
 
 ABLATION_CONFIGS = {
-    "Full Model (A+B+C)":       {"disable_a": False, "disable_b": False, "disable_c": False},
-    "Branch A only (Pixel)":    {"disable_a": False, "disable_b": True,  "disable_c": True},
-    "Branch B only (DCT)":      {"disable_a": True,  "disable_b": False, "disable_c": True},
-    "Branch C only (Stats)":    {"disable_a": True,  "disable_b": True,  "disable_c": False},
-    "A+B (no Stats)":           {"disable_a": False, "disable_b": False, "disable_c": True},
-    "A+C (no DCT)":             {"disable_a": False, "disable_b": True,  "disable_c": False},
-    "B+C (no Pixel)":           {"disable_a": True,  "disable_b": False, "disable_c": False},
+    "Full Model (A+B+C+D)":     {"disable_a": False, "disable_b": False, "disable_c": False, "disable_d": False},
+    "Branch A only (Pixel)":    {"disable_a": False, "disable_b": True,  "disable_c": True,  "disable_d": True},
+    "Branch B only (DCT)":      {"disable_a": True,  "disable_b": False, "disable_c": True,  "disable_d": True},
+    "Branch C only (Stats)":    {"disable_a": True,  "disable_b": True,  "disable_c": False, "disable_d": True},
+    "Branch D only (GenAI)":    {"disable_a": True,  "disable_b": True,  "disable_c": True,  "disable_d": False},
+    "A+B (no Stats/Gen)":       {"disable_a": False, "disable_b": False, "disable_c": True,  "disable_d": True},
+    "A+B+C (Tri-Branch)":       {"disable_a": False, "disable_b": False, "disable_c": False, "disable_d": True},
+    "B+C+D (no Pixel)":         {"disable_a": True,  "disable_b": False, "disable_c": False, "disable_d": False},
 }
 
 
@@ -222,6 +236,11 @@ def run_ablation_study(model_path: str, dataloader, device):
     best_config = max(results, key=lambda k: results[k]["f1"])
     print(f"  Best configuration: {best_config} (F1={results[best_config]['f1']*100:.1f}%)")
     print()
+
+    os.makedirs("results", exist_ok=True)
+    with open("results/ablation_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+    print("  Saved ablation results to results/ablation_results.json")
 
     return results
 

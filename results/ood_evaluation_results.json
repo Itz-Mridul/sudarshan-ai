@@ -1,0 +1,15 @@
+{
+  "energy_scoring": {
+    "auroc_unseen_payload": 0.44,
+    "fpr95_unseen_payload": 0.8,
+    "auroc_noisy_covers": 0.92,
+    "fpr95_noisy_covers": 0.2
+  },
+  "softmax_scoring": {
+    "auroc_unseen_payload": 0.6,
+    "fpr95_unseen_payload": 0.6,
+    "auroc_noisy_covers": 0.68,
+    "fpr95_noisy_covers": 0.4
+  },
+  "energy_superiority_confirmed": false
+}

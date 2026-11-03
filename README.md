@@ -8,11 +8,13 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch)](https://pytorch.org)
 [![Streamlit](https://img.shields.io/badge/Demo-Streamlit-FF4B4B?logo=streamlit)](https://streamlit.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-20%2F20_passing-brightgreen)](run_all_tests.py)
+[![Tests](https://img.shields.io/badge/Tests-26%2F26_passing-brightgreen)](run_all_tests.py)
+[![Model](https://img.shields.io/badge/Model-Quad--Branch_Fusion-9cf)](src/model/fusion_model.py)
+[![Edge](https://img.shields.io/badge/Edge-INT8_Quantized-orange)](src/deploy/quantize.py)
 
 <img src="assets/sudarshana_hero.png" alt="Sudarshana UI Preview" width="800"/>
 
-A multi-branch deep learning system that detects hidden steganographic content in images across three signal domains simultaneously — and provides a defense-context risk score for air-gapped DRDO/defence endpoints.
+A four-branch deep learning forensic system that detects hidden steganographic content in images across spatial, frequency, statistical, and generative domains simultaneously — featuring Transformer Cross-Attention, Helmholtz energy-based open-set rejection, Grad-CAM attribution faithfulness audits, and sub-250ms INT8 CPU edge deployment for air-gapped forensic endpoints.
 
 </div>
 

@@ -66,11 +66,14 @@ COLORS = {
     "branch_a": "#E74C3C",
     "branch_b": "#3498DB",
     "branch_c": "#2ECC71",
+    "branch_d": "#E67E22",
     "fusion":   "#9B59B6",
     "xunet":    "#F39C12",
     "random":   "#95A5A6",
 }
 
+
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu"))
 
 # ─── Model Loader ─────────────────────────────────────────────────────────────
 
@@ -81,31 +84,50 @@ def load_model(checkpoint: str, mode: str, cfg: Config):
         m = BranchBClassifier(feature_dim=cfg.feature_dim_b, num_classes=cfg.num_classes)
     elif mode == "branch_c":
         m = BranchCClassifier(feature_dim=cfg.feature_dim_c, num_classes=cfg.num_classes)
+    elif mode == "branch_d":
+        from branches.branch_d_generative import BranchDClassifier
+        m = BranchDClassifier(feature_dim=cfg.feature_dim_d, num_classes=cfg.num_classes)
     else:
         m = MultiBranchSteganalyzer(
             feature_dim_a=cfg.feature_dim_a,
             feature_dim_b=cfg.feature_dim_b,
             feature_dim_c=cfg.feature_dim_c,
+            feature_dim_d=cfg.feature_dim_d,
         )
     state = torch.load(checkpoint, map_location="cpu")
-    m.load_state_dict(extract_state_dict(state))
+    s_dict = extract_state_dict(state)
+    try:
+        m.load_state_dict(s_dict)
+    except RuntimeError:
+        if any(k.startswith("conv1") for k in s_dict.keys()) and hasattr(m, "backbone"):
+            prefixed = {f"backbone.{k}": v for k, v in s_dict.items()}
+            m.load_state_dict(prefixed, strict=False)
+        else:
+            m.load_state_dict(s_dict, strict=False)
+    m.to(DEVICE)
     m.eval()
     return m
 
 
 @torch.no_grad()
-def run_inference(model, loader):
+def run_inference(model, loader, mode="fusion", max_batches=20):
     all_labels, all_preds, all_probs = [], [], []
-    for clean_imgs, stego_imgs in loader:
+    for batch_idx, (clean_imgs, stego_imgs) in enumerate(loader):
+        if max_batches and batch_idx >= max_batches:
+            break
         B = clean_imgs.size(0)
-        images = torch.cat([clean_imgs, stego_imgs], dim=0)
+        images = torch.cat([clean_imgs, stego_imgs], dim=0).to(DEVICE)
         labels = torch.cat([torch.zeros(B, dtype=torch.long), torch.ones(B, dtype=torch.long)], dim=0)
+        
+        if mode == "branch_d":
+            if images.size(1) == 1:
+                images = images.repeat(1, 3, 1, 1)
         
         logits = model(images)
         probs = F.softmax(logits, dim=1)
         all_labels.extend(labels.numpy())
-        all_preds.extend(logits.argmax(dim=1).numpy())
-        all_probs.extend(probs[:, 1].numpy())
+        all_preds.extend(logits.argmax(dim=1).cpu().numpy())
+        all_probs.extend(probs[:, 1].cpu().numpy())
     return np.array(all_labels), np.array(all_preds), np.array(all_probs)
 
 
@@ -274,6 +296,7 @@ def main():
         ("Branch A (Pixel CNN)", "branch_a"):   ("weights/branch_a_best.pt", "branch_a"),
         ("Branch B (DCT CNN)",   "branch_b"):   ("weights/branch_b_best.pt", "branch_b"),
         ("Branch C (Stats MLP)", "branch_c"):   ("weights/branch_c_best.pt", "branch_c"),
+        ("Branch D (Generative)","branch_d"):   ("weights/branch_d_best.pt", "branch_d"),
         ("MBCSS Fusion (ours)",  "fusion"):     ("weights/fusion_best.pt",   "fusion"),
     }
 
@@ -282,9 +305,9 @@ def main():
         if not Path(ckpt).exists():
             print(f"  ⏳ {name}: checkpoint not ready yet — skipping ({ckpt})")
             continue
-        print(f"  Evaluating {name}...")
+        print(f"  Evaluating {name} on {DEVICE}...")
         model = load_model(ckpt, mode, cfg)
-        labels, preds, probs = run_inference(model, test_loader)
+        labels, preds, probs = run_inference(model, test_loader, mode=mode, max_batches=20)
         metrics = compute_metrics(labels, preds, probs)
         results[(name, color_key)] = metrics
         print(f"    Acc={metrics['accuracy']:.1f}%  F1={metrics['f1']:.1f}%  AUC={metrics['auc']:.1f}%")

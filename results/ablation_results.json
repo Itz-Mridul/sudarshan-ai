@@ -1,0 +1,92 @@
+{
+  "Full Model (A+B+C+D)": {
+    "accuracy": 0.484375,
+    "precision": 0.48437499992431643,
+    "recall": 0.9999999996774194,
+    "f1": 0.6526315744132964,
+    "tp": 31,
+    "fp": 33,
+    "fn": 0,
+    "tn": 0
+  },
+  "Branch A only (Pixel)": {
+    "accuracy": 0.484375,
+    "precision": 0.48437499992431643,
+    "recall": 0.9999999996774194,
+    "f1": 0.6526315744132964,
+    "tp": 31,
+    "fp": 33,
+    "fn": 0,
+    "tn": 0
+  },
+  "Branch B only (DCT)": {
+    "accuracy": 0.515625,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 31,
+    "tn": 33
+  },
+  "Branch C only (Stats)": {
+    "accuracy": 0.515625,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 31,
+    "tn": 33
+  },
+  "Branch D only (GenAI)": {
+    "accuracy": 0.515625,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 31,
+    "tn": 33
+  },
+  "A+B (no Stats/Gen)": {
+    "accuracy": 0.484375,
+    "precision": 0.48437499992431643,
+    "recall": 0.9999999996774194,
+    "f1": 0.6526315744132964,
+    "tp": 31,
+    "fp": 33,
+    "fn": 0,
+    "tn": 0
+  },
+  "A+B+C (Tri-Branch)": {
+    "accuracy": 0.484375,
+    "precision": 0.48437499992431643,
+    "recall": 0.9999999996774194,
+    "f1": 0.6526315744132964,
+    "tp": 31,
+    "fp": 33,
+    "fn": 0,
+    "tn": 0
+  },
+  "B+C+D (no Pixel)": {
+    "accuracy": 0.515625,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 31,
+    "tn": 33
+  },
+  "Cross-Attention (A+B+C)": {
+    "accuracy": 0.484375,
+    "precision": 0.48437499992431643,
+    "recall": 0.9999999996774194,
+    "f1": 0.6526315744132964,
+    "tp": 31,
+    "fp": 33,
+    "fn": 0,
+    "tn": 0
+  }
+}

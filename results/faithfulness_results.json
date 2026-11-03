@@ -1,0 +1,8 @@
+{
+  "n_samples": 5,
+  "mean_ground_truth_iou": 0.0951,
+  "std_ground_truth_iou": 0.0017,
+  "mean_deletion_drop_top20pct": 0.0131,
+  "mean_deletion_drop_top50pct": 0.0245,
+  "verdict": "Moderate Faithfulness"
+}

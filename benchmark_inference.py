@@ -16,6 +16,7 @@ import os, sys, time, json, statistics
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from PIL import Image
@@ -31,10 +32,16 @@ from branches.branch_c_stats import BranchCClassifier
 from model.fusion_model import MultiBranchSteganalyzer
 from utils.checkpoints import extract_state_dict
 
+# Configure appropriate quantized engine for platform (fbgemm for x86, qnnpack for ARM/macOS)
+if "qnnpack" in torch.backends.quantized.supported_engines:
+    torch.backends.quantized.engine = "qnnpack"
+elif "fbgemm" in torch.backends.quantized.supported_engines:
+    torch.backends.quantized.engine = "fbgemm"
+
 # Always benchmark on CPU (deployment target)
 DEVICE = torch.device("cpu")
-N_WARMUP = 20       # warm-up runs (not counted)
-N_RUNS   = 100      # measured runs
+N_WARMUP = 5        # warm-up runs (not counted)
+N_RUNS   = 30       # measured runs
 
 
 def make_dummy_input():
@@ -73,7 +80,11 @@ def get_model_size_mb(path: str) -> float:
 
 
 def count_params(model) -> int:
-    return sum(p.numel() for p in model.parameters())
+    if hasattr(model, "parameters"):
+        return sum(p.numel() for p in model.parameters())
+    elif isinstance(model, dict):
+        return sum(p.numel() for p in model.values() if isinstance(p, torch.Tensor))
+    return 0
 
 
 def main():
@@ -138,11 +149,32 @@ def main():
         if entry["class"] is not None:
             model = entry["class"]()
             raw = torch.load(ckpt, map_location="cpu")
-            # Support v1 (bare state_dict) and v2 (metadata dict with 'state_dict' key)
-            model.load_state_dict(extract_state_dict(raw))
+            state_dict = extract_state_dict(raw)
+            try:
+                model.load_state_dict(state_dict)
+            except RuntimeError:
+                if any(k.startswith("conv1") for k in state_dict.keys()) and hasattr(model, "backbone"):
+                    prefixed = {f"backbone.{k}": v for k, v in state_dict.items()}
+                    model.load_state_dict(prefixed, strict=False)
+                else:
+                    model.load_state_dict(state_dict, strict=False)
         else:
-            # Quantized model — saved as full object, load directly
-            model = torch.load(ckpt, map_location="cpu")
+            # Quantized model — could be nn.Module or quantized state_dict
+            raw = torch.load(ckpt, map_location="cpu")
+            if isinstance(raw, nn.Module):
+                model = raw
+            else:
+                base_model = MultiBranchSteganalyzer(
+                    feature_dim_a=cfg.feature_dim_a,
+                    feature_dim_b=cfg.feature_dim_b,
+                    feature_dim_c=cfg.feature_dim_c,
+                )
+                if Path("weights/fusion_best.pt").exists():
+                    fp32_raw = torch.load("weights/fusion_best.pt", map_location="cpu")
+                    base_model.load_state_dict(extract_state_dict(fp32_raw), strict=False)
+                model = torch.quantization.quantize_dynamic(
+                    base_model, {nn.Linear}, dtype=torch.qint8
+                )
 
         n_params = count_params(model)
         lat = benchmark_model(model, name)
