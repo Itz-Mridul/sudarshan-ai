@@ -325,6 +325,14 @@ def split_stems_three_way(
         all_stems = all_stems[:max_images]
 
     n_total = len(all_stems)
+    if n_total == 0:
+        raise RuntimeError(
+            f"\n❌ Dataset Error: 0 matching clean/stego pairs found!\n"
+            f"   clean_dir: '{clean_dir}' contains {len(clean_stems)} supported image files.\n"
+            f"   stego_dir: '{stego_dir}' contains {len(stego_stems)} supported image files.\n"
+            f"Steganalysis requires corresponding pairs with matching names (e.g. '001.png' in both).\n"
+            f"Please verify your dataset folders or run: python scripts/generate_malicious_stego.py --paired_training_set\n"
+        )
     n_test = max(1, int(n_total * test_split))
     n_val  = max(1, int(n_total * val_split))
 

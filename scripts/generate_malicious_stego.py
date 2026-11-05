@@ -281,13 +281,69 @@ def evaluate_on_malicious_dataset(manifest: List[Dict]):
     print(f"🛡️ Defended against Real-World Malware Carriers (Reverse Shells, C2 Beacons, Exfiltrations).\n")
 
 
+def generate_paired_training_dataset(
+    num_pairs: int = 100,
+    clean_dir: Path = ROOT_DIR / "data" / "clean",
+    stego_dir: Path = ROOT_DIR / "data" / "stego"
+):
+    """
+    Generates paired (clean, stego) images with identical file stems for training.
+    Ensures dataset loaders (split_stems_three_way) find 100% matched pairs.
+    """
+    clean_dir.mkdir(parents=True, exist_ok=True)
+    stego_dir.mkdir(parents=True, exist_ok=True)
+    
+    threat_keys = list(MALICIOUS_PAYLOAD_TEMPLATES.keys())
+    print(f"\n==============================================================")
+    print(f"  Generating {num_pairs} PAIR-SAFE Training Images (Clean & Stego)")
+    print(f"  Clean Target: {clean_dir}")
+    print(f"  Stego Target: {stego_dir}")
+    print(f"==============================================================")
+
+    for i in range(1, num_pairs + 1):
+        stem = f"threat_pair_{i:05d}"
+        
+        # 1. Generate realistic textured cover
+        x = np.linspace(0, 10 + (i % 5), 256)
+        y = np.linspace(0, 10 + (i % 7), 256)
+        xx, yy = np.meshgrid(x, y)
+        texture = np.sin(xx) * np.cos(yy) * 45 + np.random.normal(128, 12, (256, 256))
+        cover_arr = np.clip(texture, 0, 255).astype(np.uint8)
+        
+        # Save Clean Cover
+        clean_file = clean_dir / f"{stem}.png"
+        Image.fromarray(cover_arr).save(clean_file)
+
+        # 2. Embed threat payload
+        threat_type = threat_keys[i % len(threat_keys)]
+        payload = MALICIOUS_PAYLOAD_TEMPLATES[threat_type]
+        stego_file = stego_dir / f"{stem}.png"
+
+        if i % 2 == 0:
+            stego_arr = embed_lsb(cover_arr, payload, seed=42 + i)
+            Image.fromarray(stego_arr).save(stego_file)
+        else:
+            stego_arr = embed_dct(cover_arr, payload, seed=42 + i, allow_partial=True)
+            Image.fromarray(stego_arr).save(stego_file)
+
+        if i % 25 == 0 or i == num_pairs:
+            print(f"  [{i:04d}/{num_pairs:04d}] Paired '{stem}.png' created (Clean + Stego)")
+
+    print(f"\n✅ Created {num_pairs} perfectly matched clean/stego training pairs.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Real-World Malicious Stego Carriers")
     parser.add_argument("--num_images", type=int, default=15, help="Number of threat images to generate")
     parser.add_argument("--output_dir", type=str, default="data/malicious_eval", help="Destination folder")
     parser.add_argument("--evaluate", action="store_true", help="Run model inference on generated threat images")
     parser.add_argument("--add_to_stego", action="store_true", help="Automatically copy generated carriers into data/stego/ for training")
+    parser.add_argument("--paired_training_set", action="store_true", help="Generate matched (clean, stego) pairs with identical stems for training")
     args = parser.parse_args()
+
+    if args.paired_training_set:
+        generate_paired_training_dataset(num_pairs=args.num_images)
+        return
 
     out_path = Path(args.output_dir)
     manifest = create_malicious_stego_dataset(out_path, num_images=args.num_images)
