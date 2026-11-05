@@ -247,10 +247,14 @@ def run_ablation_study(model_path: str, dataloader, device):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sudarshana Ablation Study")
-    parser.add_argument("--weights", type=str, default="weights/fusion_best.pt",
+    parser.add_argument("--weights", "--fusion_ckpt", dest="weights", type=str, default="weights/fusion_best.pt",
                         help="Path to trained fusion model weights")
-    parser.add_argument("--data_dir", type=str, default="data/stego_dataset",
-                        help="Path to test dataset")
+    parser.add_argument("--clean_dir", type=str, default="data/clean",
+                        help="Path to clean dataset")
+    parser.add_argument("--stego_dir", type=str, default="data/stego",
+                        help="Path to stego dataset")
+    parser.add_argument("--data_dir", type=str, default=None,
+                        help="Path to test dataset (optional fallback)")
     parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size for evaluation")
     args = parser.parse_args()
@@ -258,28 +262,27 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Check if dataset exists
-    if not os.path.exists(args.data_dir):
-        print(f"\n⚠️  Dataset not found at: {args.data_dir}")
-        print("  To run the ablation study, you need the training dataset.")
-        print("  Run: bash scripts/setup_boss_dataset.sh")
-        print()
-        print("  Running a quick smoke test with random data instead...")
-        print()
+    clean_path = Path(args.clean_dir)
+    stego_path = Path(args.stego_dir)
 
-        # Create a dummy dataloader for smoke testing
+    # Check if real data exists
+    if clean_path.exists() and stego_path.exists() and len(list(clean_path.glob("*.*"))) > 0:
+        print(f"Loading real test dataset from {clean_path} & {stego_path}...")
+        sys.path.append("src")
+        from data_pipeline.dataset import get_dataloaders
+        _, _, test_loader = get_dataloaders(
+            clean_dir=str(clean_path),
+            stego_dir=str(stego_path),
+            batch_size=args.batch_size,
+            num_workers=2
+        )
+        run_ablation_study(args.weights, test_loader, device)
+    else:
+        print(f"\n⚠️  Dataset not found at: {clean_path} and {stego_path}")
+        print("  Running a quick smoke test with random data instead...\n")
         from torch.utils.data import DataLoader, TensorDataset
         dummy_images = torch.randn(64, 1, 256, 256)
         dummy_labels = torch.randint(0, 2, (64,))
         dummy_dataset = TensorDataset(dummy_images, dummy_labels)
         dataloader = DataLoader(dummy_dataset, batch_size=args.batch_size)
-
         run_ablation_study(args.weights, dataloader, device)
-    else:
-        # Use real dataset
-        sys.path.append("src")
-        from data_pipeline.dataset import get_dataloaders
-        _, _, test_loader = get_dataloaders(
-            args.data_dir, batch_size=args.batch_size, num_workers=2
-        )
-        run_ablation_study(args.weights, test_loader, device)

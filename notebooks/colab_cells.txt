@@ -4,27 +4,55 @@
 # =====================================================================
 
 # ---------------------------------------------------------------------
-# CELL 1: Mount Google Drive & Set Working Directory
+# CELL 1: Mount Google Drive, Extract Updated Code & Link Dataset
 # ---------------------------------------------------------------------
 from google.colab import drive
 import os, sys, shutil
 
 drive.mount('/content/drive')
 
-# OPTION A: If you uploaded a zip file to Drive (FASTEST - recommended):
-# If you uploaded 'EDI_Project_Colab.zip' to Drive root:
-if os.path.exists('/content/drive/MyDrive/EDI_Project_Colab.zip'):
-    print("📦 Extracting project to fast local Colab NVMe SSD...")
-    !unzip -q /content/drive/MyDrive/EDI_Project_Colab.zip -d /content/
-    os.chdir('/content/EDI_Project')
-# OPTION B: If you uploaded the unzipped folder directly to Drive:
-elif os.path.exists('/content/drive/MyDrive/EDI_Project'):
-    os.chdir('/content/drive/MyDrive/EDI_Project')
-else:
-    print("⚠️ Project folder not found automatically. Please check your Drive path.")
+# 1. Extract latest project code (only ~39 MB)
+zip_candidates = [
+    '/content/drive/MyDrive/EDI_Project_Colab_Latest.zip',
+    '/content/drive/MyDrive/EDI_Project_Colab.zip',
+    '/content/drive/MyDrive/EDI_Project.zip'
+]
+extracted = False
+for z in zip_candidates:
+    if os.path.exists(z):
+        print(f"📦 Extracting updated codebase from {z} to fast Colab SSD...")
+        !unzip -q -o "{z}" -d /content/EDI_Project
+        os.chdir('/content/EDI_Project')
+        extracted = True
+        break
+
+if not extracted:
+    if os.path.exists('/content/drive/MyDrive/EDI_Project_Final'):
+        os.chdir('/content/drive/MyDrive/EDI_Project_Final')
+    elif os.path.exists('/content/drive/MyDrive/EDI_Project'):
+        os.chdir('/content/drive/MyDrive/EDI_Project')
+    else:
+        print("⚠️ Project folder or zip not found. Please check your Drive path.")
 
 print("Current Directory:", os.getcwd())
 sys.path.insert(0, 'src')
+
+# 2. Check for dataset on Google Drive and link/copy to local SSD
+# (Reading directly from Drive takes 30+ mins/epoch; local SSD takes 1 min/epoch!)
+drive_data_candidates = [
+    '/content/drive/MyDrive/EDI_Project_Final/data',
+    '/content/drive/MyDrive/EDI_Project/data',
+    '/content/drive/MyDrive/data'
+]
+if not os.path.exists('data/clean') or len(os.listdir('data/clean')) == 0:
+    for dpath in drive_data_candidates:
+        if os.path.exists(os.path.join(dpath, 'clean')):
+            print(f"⚡ Copying dataset from Google Drive ({dpath}) to fast NVMe SSD (~2-3 mins once)...")
+            os.makedirs('data', exist_ok=True)
+            !cp -r "{dpath}/clean" data/
+            !cp -r "{dpath}/stego" data/
+            print("✅ Dataset copied to local high-speed SSD!")
+            break
 
 
 # ---------------------------------------------------------------------

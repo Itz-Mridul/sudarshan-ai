@@ -195,6 +195,9 @@ def get_model_size_mb(model_path: str) -> float:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    import platform
+    default_backend = "qnnpack" if platform.processor() == "arm" or platform.machine().startswith("arm") else "fbgemm"
+
     parser = argparse.ArgumentParser(description="INT8 Quantize the MBCSS fusion model")
     parser.add_argument("--model_path",  default="weights/fusion_best.pt",
                         help="Path to the trained FP32 model (.pt)")
@@ -205,7 +208,7 @@ def main():
     parser.add_argument("--n_calib",     type=int, default=200,
                         help="Number of calibration images")
     parser.add_argument("--image_size",  type=int, default=256)
-    parser.add_argument("--backend",     default="fbgemm",
+    parser.add_argument("--backend",     default=default_backend,
                         choices=["fbgemm", "qnnpack"],
                         help="fbgemm = Intel x86 CPU, qnnpack = ARM/mobile")
     args = parser.parse_args()
