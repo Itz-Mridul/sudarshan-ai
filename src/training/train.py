@@ -377,10 +377,9 @@ def train(cfg: Config):
     # ── Training Loop ─────────────────────────────────────────────────────────
     # Early stopping monitors VALIDATION LOSS (lower = better).
     # We do NOT use val_accuracy because accuracy can plateau while loss still
-    # improves (important for calibration), and accuracy is less smooth near
-    # saturation. Saving the checkpoint at lowest val_loss gives the best
-    # generalising model.
+    # Tracking best model by validation accuracy (and breaking ties with val_loss)
     best_val_loss = float("inf")
+    best_val_acc = 0.0
     no_improve = 0
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
     checkpoint_path = get_checkpoint_name(cfg)
@@ -393,10 +392,11 @@ def train(cfg: Config):
         if isinstance(raw, dict):
             start_epoch = raw.get("epoch", 0) + 1
             best_val_loss = raw.get("val_loss", float("inf"))
-            print(f"   Resumed at epoch {start_epoch} (previous best val loss: {best_val_loss:.4f})")
+            best_val_acc = raw.get("val_acc", 0.0)
+            print(f"   Resumed at epoch {start_epoch} (best val loss: {best_val_loss:.4f}, best val acc: {best_val_acc:.1f}%)")
 
     print(f"\nStarting training for {cfg.epochs} epochs (starting at {start_epoch})...")
-    print(f"Early stopping: patience={cfg.early_stop_patience} epochs (monitors val_loss)")
+    print(f"Early stopping: patience={cfg.early_stop_patience} epochs (monitors validation)")
     print("-" * 60)
 
     for epoch in range(start_epoch, cfg.epochs + 1):
@@ -422,10 +422,13 @@ def train(cfg: Config):
               f"Val: loss={val_metrics['loss']:.4f}, acc={val_metrics['accuracy']:.1f}% | "
               f"LR={scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
 
-        # Save best checkpoint (by val_loss, not val_acc)
-        if val_metrics["loss"] < best_val_loss:
+        # Save best checkpoint by val_acc (primary) and val_loss (secondary)
+        is_best = (val_metrics["accuracy"] > best_val_acc) or (
+            val_metrics["accuracy"] == best_val_acc and val_metrics["loss"] < best_val_loss
+        )
+        if is_best:
             best_val_loss = val_metrics["loss"]
-            # Save full metadata dict (v2 format — backward compatible via load helpers)
+            best_val_acc  = val_metrics["accuracy"]
             checkpoint = {
                 "state_dict":   model.state_dict(),
                 "epoch":        epoch,
@@ -440,15 +443,27 @@ def train(cfg: Config):
             }
             torch.save(checkpoint, checkpoint_path)
             print(f"  ★ New best model saved → {checkpoint_path} "
-                  f"(val_loss={best_val_loss:.4f}, val_acc={val_metrics['accuracy']:.1f}%)")
+                  f"(val_loss={best_val_loss:.4f}, val_acc={best_val_acc:.1f}%)")
             no_improve = 0
         else:
             no_improve += 1
 
-        # Early stopping on val_loss
+        # Always save latest checkpoint so work is never lost
+        latest_path = checkpoint_path.replace("_best.pt", "_latest.pt")
+        torch.save({
+            "state_dict":   model.state_dict(),
+            "epoch":        epoch,
+            "val_loss":     val_metrics["loss"],
+            "val_acc":      val_metrics["accuracy"],
+            "mode":         cfg.mode,
+            "seed":         cfg.seed,
+            "timestamp":    datetime.utcnow().isoformat() + "Z",
+        }, latest_path)
+
+        # Early stopping check
         if no_improve >= cfg.early_stop_patience:
             print(f"\nEarly stopping at epoch {epoch} "
-                  f"(val_loss did not improve for {no_improve} epochs)")
+                  f"(validation did not improve for {no_improve} epochs)")
             break
 
         # Log to wandb if enabled
