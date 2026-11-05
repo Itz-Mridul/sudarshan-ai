@@ -384,22 +384,26 @@ def train(cfg: Config):
     history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
     checkpoint_path = get_checkpoint_name(cfg)
     start_epoch = 1
+    total_epochs = cfg.epochs
 
     if getattr(cfg, "resume", False) and os.path.exists(checkpoint_path):
         print(f"🔄 Resuming from existing checkpoint: {checkpoint_path}")
         raw = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(extract_state_dict(raw))
         if isinstance(raw, dict):
-            start_epoch = raw.get("epoch", 0) + 1
+            prev_epoch = raw.get("epoch", 0)
+            start_epoch = prev_epoch + 1
+            total_epochs = prev_epoch + cfg.epochs
             best_val_loss = raw.get("val_loss", float("inf"))
             best_val_acc = raw.get("val_acc", 0.0)
-            print(f"   Resumed at epoch {start_epoch} (best val loss: {best_val_loss:.4f}, best val acc: {best_val_acc:.1f}%)")
+            print(f"   Resumed after epoch {prev_epoch} | Adding {cfg.epochs} epochs (training up to epoch {total_epochs})")
+            print(f"   Baseline to beat: val_acc={best_val_acc:.1f}%, val_loss={best_val_loss:.4f}")
 
-    print(f"\nStarting training for {cfg.epochs} epochs (starting at {start_epoch})...")
+    print(f"\nStarting training from epoch {start_epoch} to {total_epochs} ({cfg.epochs} epochs total)...")
     print(f"Early stopping: patience={cfg.early_stop_patience} epochs (monitors validation)")
     print("-" * 60)
 
-    for epoch in range(start_epoch, cfg.epochs + 1):
+    for epoch in range(start_epoch, total_epochs + 1):
         t0 = time.time()
 
         # Train
