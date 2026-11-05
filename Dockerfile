@@ -1,54 +1,71 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Sudarshana — Docker Production Image
-# Multi-Branch CNN Steganography Detection System
-# ─────────────────────────────────────────────────────────────────────────────
-# Usage:
-#   docker build -t sudarshana:latest .
-#   docker run -p 8000:8000 sudarshana:latest
-#
-# For NVIDIA Jetson (edge deployment):
-#   docker build --build-arg BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3 -t sudarshana:jetson .
+# Sudarshana — Unified Production Docker Image
+# Multi-Branch CNN Steganalysis + Automated CTF Forensics Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
-ARG BASE_IMAGE=python:3.11-slim
+ARG BASE_IMAGE=python:3.11-slim-bookworm
 FROM ${BASE_IMAGE}
 
-# Metadata
-LABEL maintainer="Sudarshana AI Team — VIT Pune"
-LABEL description="Steganography Detection API — Multi-Branch CNN Fusion"
-LABEL version="2.0.0"
+LABEL maintainer="Sudarshana Forensics — VIT Pune"
+LABEL description="AI Steganalysis + Automated CTF Solver (zsteg, steghide, stegseek, binwalk)"
+LABEL version="2.5.0"
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SUDARSHANA_MODEL_PATH=/app/weights/fusion_best.pt
-
-# System dependencies (OpenCV requires libgl1)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    DEBIAN_FRONTEND=noninteractive \
+    SUDARSHANA_MODEL_PATH=/app/weights/fusion_best.pt \
+    PORT=8501
 
 WORKDIR /app
 
-# Install Python dependencies first (for Docker layer caching)
+# 1. Install system libraries, Ruby (for zsteg), steghide, exiftool, binwalk
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    wget \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    libmagic1 \
+    ruby-full \
+    rubygems \
+    steghide \
+    binwalk \
+    libimage-exiftool-perl \
+    p7zip-full \
+    ca-certificates \
+    && gem install zsteg --no-document \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Install StegSeek (High-speed rockyou cracker for JPEGs) on amd64
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        wget -q https://github.com/RickdeJager/stegseek/releases/download/v0.6/stegseek_0.6-1.deb -O /tmp/stegseek.deb && \
+        dpkg -i /tmp/stegseek.deb || apt-get install -fy && \
+        rm -f /tmp/stegseek.deb; \
+    fi
+
+# 3. Provision standard CTF wordlist
+RUN mkdir -p /usr/share/wordlists && \
+    curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-10000.txt \
+    -o /usr/share/wordlists/rockyou.txt
+
+# 4. Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir fastapi uvicorn[standard] python-multipart
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
-COPY src/ ./src/
-COPY weights/ ./weights/
-COPY app/ ./app/
+# 5. Copy project source code and weights
+COPY . .
 
-# Expose ports
-# 8000 = FastAPI REST API
-# 8501 = Streamlit Demo UI
-EXPOSE 8000 8501
+# 6. Expose ports (8501 for Streamlit UI, 8000 for FastAPI)
+EXPOSE 8501 8000
 
-# Health check for container orchestration
+# 7. Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD curl -f http://localhost:8501/_stcore/health || curl -f http://localhost:8000/health || exit 1
 
-# Default: run the FastAPI server
-CMD ["uvicorn", "src.deploy.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# 8. Default: Launch the Sudarshana Interactive Forensic & CTF Web UI
+CMD ["streamlit", "run", "app/demo.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true", "--browser.gatherUsageStats=false"]

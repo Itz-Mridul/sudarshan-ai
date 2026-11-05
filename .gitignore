@@ -34,6 +34,9 @@ data/clean/
 data/stego/
 data/malicious_eval/
 data/BOSSbase_1.01/
+data/*.png
+data/*.jpg
+data/*.jpeg
 # Keep folder structure
 !data/raw/.gitkeep
 !data/clean/.gitkeep

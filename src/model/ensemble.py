@@ -94,15 +94,21 @@ class EnsembleSteganalyzer:
         else:
             raise ValueError(f"Unsupported image input type: {type(image_input)}")
 
-        # 1. Check for Polyglot EOF Append Carving
-        if raw_file_bytes and (b"MAL_START" in raw_file_bytes or b"\x7fELF" in raw_file_bytes[100:] or b"MZ" in raw_file_bytes[100:]):
-            return {
-                "verdict": "STEGO (CARVED POLYGLOT)",
-                "confidence": 0.999,
-                "stego_prob": 0.999,
-                "threat_domain": "POLYGLOT_EOF_CARVE",
-                "details": "Malicious binary header or appended payload detected past EOF boundary."
-            }
+        # 1. Check for Polyglot EOF Append Carving (only past the official file boundary)
+        if raw_file_bytes:
+            eoi = raw_file_bytes.rfind(b"\xff\xd9") if raw_file_bytes.startswith(b"\xff\xd8") else -1
+            iend = raw_file_bytes.find(b"IEND\xaeB`\x82") if raw_file_bytes.startswith(b"\x89PNG") else -1
+            boundary = (eoi + 2) if eoi != -1 else (iend + 8) if iend != -1 else len(raw_file_bytes)
+            trailing_bytes = raw_file_bytes[boundary:] if boundary < len(raw_file_bytes) else b""
+
+            if trailing_bytes and (b"MAL_START" in trailing_bytes or b"\x7fELF" in trailing_bytes or b"MZ" in trailing_bytes or len(trailing_bytes) > 32):
+                return {
+                    "verdict": "STEGO (CARVED POLYGLOT)",
+                    "confidence": 0.999,
+                    "stego_prob": 0.999,
+                    "threat_domain": "POLYGLOT_EOF_CARVE",
+                    "details": f"Carved {len(trailing_bytes)} trailing bytes past official file boundary."
+                }
 
         with torch.no_grad():
             # Model 1 prob

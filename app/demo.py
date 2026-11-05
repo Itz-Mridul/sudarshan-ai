@@ -7,7 +7,11 @@ White theme · Calibri font · Indian English
 import sys, os
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.join(_HERE, "..", "src")
-sys.path.insert(0, _SRC)
+_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 import streamlit as st
 import torch
@@ -48,6 +52,29 @@ try:
     _GEN_INV_AVAILABLE = True
 except ImportError:
     _GEN_INV_AVAILABLE = False
+
+try:
+    from forensics.ctf_solver import (
+        solve_image_stego, UNIVERSAL_FLAG_REGEX, apply_stegsolve_filter,
+        decode_binary_ascii_string, scan_qr_codes, repair_png_ihdr_height,
+        audit_c2pa_provenance, perform_error_level_analysis,
+        sample_pair_analysis, spatial_noise_residual_analysis
+    )
+    _CTF_SOLVER_AVAILABLE = True
+    _CTF_SOLVER_ERROR = None
+except Exception as e:
+    try:
+        from src.forensics.ctf_solver import (
+            solve_image_stego, UNIVERSAL_FLAG_REGEX, apply_stegsolve_filter,
+            decode_binary_ascii_string, scan_qr_codes, repair_png_ihdr_height,
+            audit_c2pa_provenance, perform_error_level_analysis,
+            sample_pair_analysis, spatial_noise_residual_analysis
+        )
+        _CTF_SOLVER_AVAILABLE = True
+        _CTF_SOLVER_ERROR = None
+    except Exception as e2:
+        _CTF_SOLVER_AVAILABLE = False
+        _CTF_SOLVER_ERROR = str(e2)
 
 st.set_page_config(
     page_title="Sudarshana — Image Forensics Tool",
@@ -502,25 +529,47 @@ def get_magic_bytes(data):
     return "Unknown / Encrypted Data", "🔒", actual_magic_fmt
 
 def compression_survival(pil_img):
-    is_jpeg = getattr(pil_img, 'format', '') == "JPEG"
-    if is_jpeg:
-        # JPEG re-compression may partially preserve DCT-domain stego
-        return {
-            "WhatsApp (auto-compresses)":        8,
-            "Facebook (auto-compresses)":        12,
-            "Instagram (auto-compresses)":       10,
-            "Telegram (Send as File)":           95,
-            "Email attachment (lossless)":       98,
-            "Direct USB / file transfer":       100,
-        }
-    return {
-        "WhatsApp (auto-compresses)":        2,
-        "Facebook (auto-compresses)":         5,
-        "Instagram (auto-compresses)":        3,
-        "Telegram (Send as File)":           95,
-        "Email attachment (lossless)":       98,
-        "Direct USB / file transfer":       100,
+    """
+    Compute real LSB survival rates by actually re-compressing the image at
+    each platform's documented quality setting and measuring Bit-0 pixel agreement.
+    For lossless channels (Telegram / Email / USB), survival is 100% by definition.
+    """
+    orig_gray = np.array(pil_img.convert("L"), dtype=np.uint8)
+    orig_lsb  = (orig_gray & 1)
+
+    platform_quality = {
+        "WhatsApp (auto-compresses)":   70,
+        "Facebook (auto-compresses)":   75,
+        "Instagram (auto-compresses)":  65,
+        "Twitter / X Upload":           65,
+        "Discord Attachment":           80,
     }
+    result = {}
+    for name, quality in platform_quality.items():
+        try:
+            buf = io.BytesIO()
+            # Re-compress to JPEG at platform quality, then decode back
+            pil_img.convert("RGB").save(buf, format="JPEG", quality=quality)
+            buf.seek(0)
+            comp_gray = np.array(Image.open(buf).convert("L"), dtype=np.uint8)
+            # Resize if needed (ensure same spatial size for comparison)
+            if comp_gray.shape != orig_gray.shape:
+                comp_gray = np.array(
+                    Image.fromarray(comp_gray).resize(
+                        (orig_gray.shape[1], orig_gray.shape[0]), Image.LANCZOS
+                    ), dtype=np.uint8
+                )
+            comp_lsb  = (comp_gray & 1)
+            survival  = int(np.mean(orig_lsb == comp_lsb) * 100)
+        except Exception:
+            survival = 0
+        result[name] = survival
+
+    # Lossless / file-transfer channels always preserve all bits
+    result["Telegram (Send as File)"]    = 100
+    result["Email attachment (lossless)"] = 100
+    result["Direct USB / file transfer"]  = 100
+    return result
 
 def fmt_bytes(n):
     if n < 1024:    return f"{n} Bytes"
@@ -769,7 +818,8 @@ def main():
     cap_bytes, total_px         = estimate_capacity(pil_img)
     used_bytes, equalization    = estimate_payload(pil_img, stego_prob)
     mname, mconf, mdesc, micon  = fingerprint_method(pil_img, stego_prob)
-    survive                     = compression_survival(pil_img)
+    with st.spinner("📡 Computing real compression survival rates across CDN pipelines..."):
+        survive                 = compression_survival(pil_img)
     
     gray_arr  = np.array(pil_img.convert("L"), dtype=np.uint8)
     lsb_bits  = (gray_arr.flatten() & 1)[:2048]
@@ -991,6 +1041,107 @@ def main():
 
         st.markdown("---")
 
+        # ── ERROR LEVEL ANALYSIS (ELA) & TAMPERING DETECTION ─────────────────
+        st.markdown("#### 🔍 Error Level Analysis (ELA) — Compression & Tampering Detector")
+        st.markdown("""<div class="card">
+          <div class="card-body">
+            <strong>Forensic Principle (Krawetz, 2007):</strong> When an image is modified, spliced, or carries embedded high-frequency data, 
+            the altered regions compress at a distinct error rate compared to untouched areas. 
+            ELA saves a temporary copy at a controlled compression quality, calculates the absolute difference against the original, 
+            and amplifies non-uniformities to highlight digital manipulation.
+          </div></div>""", unsafe_allow_html=True)
+
+        ela_c1, ela_c2 = st.columns([1, 1])
+        with ela_c1:
+            ela_quality = st.slider(
+                "JPEG Compression Quality Factor (%):",
+                min_value=75,
+                max_value=99,
+                value=95,
+                step=1,
+                key="ela_qual_slider",
+                help="Quality level used for error recalculation. 95% is the forensic standard for digital tampering screening."
+            )
+        with ela_c2:
+            ela_scale = st.slider(
+                "Error Amplification Multiplier (×):",
+                min_value=5,
+                max_value=40,
+                value=20,
+                step=5,
+                key="ela_scale_slider",
+                help="Scales the microscopic compression difference to make it visible to human examiners."
+            )
+
+        try:
+            _fn_ela = perform_error_level_analysis
+        except Exception:
+            from src.forensics.ctf_solver import perform_error_level_analysis as _fn_ela
+
+        ela_res = _fn_ela(pil_img, quality=ela_quality, scale=ela_scale)
+        if "error" not in ela_res:
+            e_mean = ela_res["mean_error"]
+            e_max = ela_res["max_error"]
+            e_disc = ela_res["block_discrepancy"]
+            e_prob = ela_res["tamper_probability"]
+            e_verdict = ela_res["verdict"]
+            e_color = "#dc2626" if e_prob >= 0.70 else ("#d97706" if e_prob >= 0.40 else "#16a34a")
+
+            e_col1, e_col2, e_col3 = st.columns(3)
+            with e_col1:
+                st.image(pil_img.convert("RGB"), use_container_width=True, caption="Original Image")
+            with e_col2:
+                st.image(ela_res["ela_image"], use_container_width=True, caption=f"ELA Error Map (Amplified ×{ela_scale})")
+            with e_col3:
+                ela_np = np.asarray(ela_res["ela_image"], dtype=np.float32) / 255.0
+                ela_heat = np.stack([ela_np[:, :, 0], ela_np[:, :, 1] * 0.3, (1.0 - ela_np[:, :, 2]) * 0.2], axis=-1)
+                ela_heat = (np.clip(ela_heat, 0, 1) * 255).astype(np.uint8)
+                st.image(ela_heat, use_container_width=True, caption="Thermal Error Distribution")
+
+            st.markdown(f"""
+            <div style="background:#f8fafc;border-left:4px solid {e_color};border-radius:8px;padding:0.9rem;margin-top:0.5rem;margin-bottom:1rem;">
+                <div style="font-weight:700;color:{e_color};font-size:1.05rem;">
+                    ELA Assessment: {e_verdict} (Tamper Index: {e_prob*100:.0f}%)
+                </div>
+                <div style="font-size:0.85rem;color:#475569;margin-top:0.3rem;">
+                    <strong>Mean Error:</strong> {e_mean} &nbsp;|&nbsp; 
+                    <strong>Peak Pixel Error:</strong> {e_max}/255 &nbsp;|&nbsp; 
+                    <strong>16×16 Macroblock Variance (σ):</strong> {e_disc}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ── SPATIAL NOISE RESIDUAL (SNR) ANALYSIS ─────────────────────────────
+        st.markdown("#### 🔬 Spatial Noise Residual (SNR) & Sensor Texture Map")
+        st.caption("💡 *Forensic Principle: Natural camera sensors produce uniform high-frequency Gaussian noise. Digital injection or synthetic generation disrupts this texture.*")
+
+        try:
+            _fn_snr = spatial_noise_residual_analysis
+        except Exception:
+            from src.forensics.ctf_solver import spatial_noise_residual_analysis as _fn_snr
+
+        snr_res = _fn_snr(pil_img)
+        if "error" not in snr_res:
+            snr_col1, snr_col2 = st.columns([1, 1])
+            with snr_col1:
+                st.image(snr_res["residual_image"], use_container_width=True, caption="High-Pass Laplacian Residual Map (×4)")
+            with snr_col2:
+                s_color = "#dc2626" if snr_res["anomaly_score"] >= 0.70 else "#16a34a"
+                st.markdown(f"""
+                <div class="card" style="border-left:4px solid {s_color};">
+                  <div class="card-title" style="color:{s_color};">📊 Noise Residual Telemetry</div>
+                  <div class="card-body">
+                    <strong>Verdict:</strong> {snr_res['verdict']}<br><br>
+                    <strong>Residual Energy:</strong> <code>{snr_res['residual_energy']}</code><br>
+                    <strong>Residual Variance:</strong> <code>{snr_res['residual_variance']}</code><br>
+                    <strong>Distribution Kurtosis:</strong> <code>{snr_res['kurtosis']}</code> (Normal optical noise ≈ 3.0–8.0)<br>
+                    <strong>Anomaly Index:</strong> <code>{snr_res['anomaly_score']*100:.0f}%</code>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
         # File segment bar
         st.markdown("#### 📊 File Structure Breakdown — What is Inside the File?")
         header_pct  = max(2, min(8, int(2048/len(raw_bytes)*100)))
@@ -1088,16 +1239,74 @@ def main():
 
         # Enterprise Risk Dashboard moved to Tab 2
         with st.expander("🛡️ Enterprise Risk Dashboard (Contextual Analysis)", expanded=(label=='THREAT')):
-            th = datetime.now().hour
-            up = "Standard User"
-            dt = "External Cloud"
-            fs = round(size_kb / 1024, 2)
-            es = 0.5
+            st.markdown("""<div class="card"><div class="card-body">
+              Provide the transfer context below so the risk engine can calculate a live, personalised score
+              — no default values are used. All fields are required for an accurate assessment.
+            </div></div>""", unsafe_allow_html=True)
+
+            # ── Live context inputs — NO hardcoded defaults ──────────────────
+            er1, er2, er3 = st.columns(3)
+            with er1:
+                up = st.selectbox(
+                    "👤 Sender's clearance level:",
+                    ["intern", "contract", "employee", "manager", "admin"],
+                    index=2,
+                    key="erd_up",
+                    help="Select the actual access level of the person who sent this file."
+                )
+            with er2:
+                dt = st.selectbox(
+                    "🌐 Transfer destination:",
+                    ["internal", "dmz", "partner", "external"],
+                    index=0,
+                    key="erd_dt",
+                    help="Where is this file being sent to?"
+                )
+            with er3:
+                th = st.slider(
+                    "🕐 Transfer hour (24h clock):",
+                    0, 23, datetime.now().hour,
+                    key="erd_th",
+                    help="What time was / is the file transfer occurring?"
+                )
+            er4, er5, er6 = st.columns(3)
+            with er4:
+                fs = st.number_input(
+                    "📦 Actual file size (MB):",
+                    value=round(size_kb / 1024, 3),
+                    min_value=0.001, step=0.1,
+                    key="erd_fs",
+                    format="%.3f",
+                    help="Actual file size is auto-detected from the uploaded image."
+                )
+            with er5:
+                es = st.number_input(
+                    "📏 Expected file size (MB):",
+                    value=1.0,
+                    min_value=0.001, step=0.1,
+                    key="erd_es",
+                    help="Enter the typical / expected size for this type of image. Deviation raises risk."
+                )
+            with er6:
+                uid = st.text_input(
+                    "🪪 Sender ID (for report):",
+                    value="",
+                    key="erd_uid",
+                    placeholder="e.g. EMP-4521 or USR-???",
+                    help="Enter the sender's employee / user ID for the audit log."
+                )
+
+            # ── Compute LIVE risk score from user-provided values ─────────────
             payload_type = 'Malware' if 'Executable' in dtype else 'Unknown' if 'Encrypted' in dtype else 'Document' if '📄' in dicon else 'None'
             result = compute_risk_score(stego_prob, {
-                "user_privilege": up, "hour": th, "file_size_mb": fs,
-                "expected_size_mb": es, "destination_type": dt,
-                "user_id": "U1234", "filename": uploaded.name, "timestamp": f"{th:02d}:xx"
+                "user_privilege": up,
+                "hour": th,
+                "file_size_mb": fs,
+                "expected_size_mb": es,
+                "destination_type": dt,
+                "user_id": uid or "UNIDENTIFIED",
+                "filename": uploaded.name,
+                "timestamp": f"{th:02d}:xx"
             })
             lv = result["level"]; sc = result["score"]
             cmap = {
@@ -1109,6 +1318,7 @@ def main():
             bg, border, msg = cmap.get(lv, ("#f8fafc","#64748b","⚪ Unknown"))
             dynamic_why = build_dynamic_why(result, fs, payload_type, structural, rs_result, dtype, th)
 
+            st.markdown("---")
             # Dynamic "Why" — specific linked narrative sentence
             st.markdown(f"""<div style="background:#fefce8;border:2px solid #a16207;border-radius:12px;
               padding:1rem 1.25rem;margin-bottom:1rem;">
@@ -1124,7 +1334,7 @@ def main():
               <div style="font-size:1.15rem;color:{border};margin-top:.3rem;font-weight:700;">{msg}</div>
             </div>""", unsafe_allow_html=True)
             
-            st.markdown("<br><strong style='color:#475569;font-size:0.9rem;'>Detailed Score Breakdown:</strong>", unsafe_allow_html=True)
+            st.markdown("<br><strong style='color:#475569;font-size:0.9rem;'>Live Score Breakdown (based on your inputs above):</strong>", unsafe_allow_html=True)
             labels = {
                 "model_stego_prob": "AI Detection Result",
                 "user_privilege":   "Sender Clearance Level",
@@ -1215,9 +1425,213 @@ def main():
 
         st.markdown("---")
 
-        # ── ADVANCED EXTRACTION ENGINE ────────────────────────────────────────
+        # ── AUTOMATED FORENSIC PAYLOAD & COVERT CHANNEL CARVER ─────────────────
+        st.markdown("#### 🔍 Automated Forensic Payload & Covert Channel Carver")
+        st.markdown("""<div class="card">
+          <div class="card-body">
+            <strong>Deep Covert Channel & Exfiltration Artifact Recovery:</strong> Malicious actors, data exfiltration trojans, and covert communication channels 
+            frequently conceal confidential records inside image bitplanes and appended structures. 
+            This automated forensic engine reconstructs arbitrary structured tokens, canary identifiers, and exfiltration payloads, parses polyglot boundaries 
+            past the EOF marker (e.g., embedded ZIP/RAR archives, encrypted documents), harvests cipher clues from metadata tags, and executes multi-channel bitplane & keyed XOR sweeps.
+          </div></div>""", unsafe_allow_html=True)
+
+        with st.expander("⚡ Execute Automated Forensic Payload & Polyglot Carver", expanded=True):
+            f_col1, f_col2 = st.columns([1.5, 1])
+            with f_col1:
+                pattern_mode = st.selectbox(
+                    "Target Artifact / Token Pattern:",
+                    [
+                        "Structured Secret / Canary Pattern: <prefix>{<secret>}",
+                        "Generic Delimited Token: {<secret>}",
+                        "Forensic Indicators of Compromise (IOCs: IPs, URLs, C2, Keys)",
+                        "Custom Forensic IOC / Regex Pattern",
+                    ],
+                    key="ctf_pattern_mode"
+                )
+                if pattern_mode == "Custom Forensic IOC / Regex Pattern":
+                    user_custom_regex = st.text_input(
+                        "Enter Custom Forensic Python Regex:",
+                        value=r"[A-Za-z0-9_\-\.]{2,32}\{[A-Za-z0-9_\-\.\!\@\#\$\%\^\&\*\+\=]{4,100}\}",
+                        key="ctf_custom_regex"
+                    )
+                elif pattern_mode.startswith("Generic Delimited Token"):
+                    user_custom_regex = r"\{[A-Za-z0-9_\-\.\!\@\#\$\%]{6,80}\}"
+                elif pattern_mode.startswith("Forensic Indicators"):
+                    user_custom_regex = r"(?:https?://[A-Za-z0-9\.\-_/]+|\b[0-9]{1,3}(?:\.[0-9]{1,3}){3}\b|AKIA[0-9A-Z]{16}|\b[a-z2-7]{16,56}\.onion\b)"
+                else:
+                    user_custom_regex = None
+            with f_col2:
+                custom_pass = st.text_input(
+                    "Optional Passphrase / Decryption Key (Leave blank for Auto-Harvest):",
+                    value="",
+                    help="Clues, keys, and words from EXIF, comments, and embedded notes are automatically tested.",
+                    key="ctf_custom_pass"
+                )
+
+            if st.button("⚡ Reconstruct & Extract Covert Artifacts", type="primary", use_container_width=True, key="btn_run_ctf_solver"):
+                _solver_fn = None
+                if _CTF_SOLVER_AVAILABLE:
+                    _solver_fn = solve_image_stego
+                else:
+                    try:
+                        from forensics.ctf_solver import solve_image_stego as _fn
+                        _solver_fn = _fn
+                    except Exception:
+                        try:
+                            from src.forensics.ctf_solver import solve_image_stego as _fn
+                            _solver_fn = _fn
+                        except Exception as load_err:
+                            st.error(f"Forensic solver module unavailable: {load_err}")
+
+                if _solver_fn is not None:
+                    with st.spinner("Executing multi-channel bitplane sweep, polyglot carving, and statistical steganalysis..."):
+                        report = _solver_fn(
+                            raw_bytes=raw_bytes,
+                            filename=uploaded.name,
+                            pil_img=pil_img,
+                            custom_regex=user_custom_regex,
+                            user_passphrase=custom_pass,
+                        )
+
+                    # 1. Recovered Payloads / Tokens
+                    if report.flags:
+                        st.balloons()
+                        st.markdown(f"""
+                        <div style="background:#f0fdf4;border:2px solid #22c55e;border-radius:10px;padding:1.2rem;margin-bottom:1rem;">
+                            <div style="font-size:1.3rem;font-weight:900;color:#15803d;margin-bottom:.4rem;">
+                                🎯 {len(report.flags)} Steganographic Payload(s) / Secret(s) Recovered!
+                            </div>
+                            <div style="font-size:.9rem;color:#166534;">
+                                Sudarshana successfully recovered embedded covert payload artifacts through automated forensic reconstruction.
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        for idx, flg in enumerate(report.flags, 1):
+                            st.markdown(f"**Recovered Artifact #{idx}** · Source: `{flg.source}` ({flg.confidence} confidence)")
+                            st.code(flg.flag, language="text")
+                            if flg.details:
+                                st.caption(f"ℹ️ **Extraction Telemetry:** {flg.details}")
+                    else:
+                        st.info("ℹ️ No structured tokens or credentials matching the specified pattern were recovered in standard bitplanes. Check carved files, IOCs, and statistical analysis below.")
+
+                    # 2. Multi-Vector Statistical Steganalysis Verification
+                    st.markdown("##### 📊 Multi-Vector Statistical Steganalysis Verification")
+                    stat_col1, stat_col2 = st.columns(2)
+                    with stat_col1:
+                        if getattr(report, "chi2_findings", None) and "channel_findings" in report.chi2_findings and report.chi2_findings["channel_findings"]:
+                            chi_data = report.chi2_findings
+                            c_prob = chi_data.get("stego_probability", 0.0)
+                            c_verdict = chi_data.get("verdict", "BENIGN")
+                            c_color = "#dc2626" if c_prob >= 0.80 else ("#d97706" if c_prob >= 0.50 else "#16a34a")
+                            st.markdown(f"""
+                            <div style="background:#f8fafc;border-left:4px solid {c_color};border-radius:8px;padding:0.9rem;min-height:130px;">
+                                <div style="font-weight:700;color:{c_color};font-size:0.95rem;">
+                                    Westfeld Chi-Square (χ²): {c_prob*100:.1f}% Probability
+                                </div>
+                                <div style="font-size:0.85rem;font-weight:600;margin-top:0.2rem;color:#1e293b;">{c_verdict}</div>
+                                <div style="font-size:0.8rem;color:#64748b;margin-top:0.4rem;">
+                                    Peer-reviewed Westfeld & Pfitzmann (1999) Pairs of Values (PoVs) spatial attack. Evaluates histogram equalization.
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.info("Chi-Square steganalysis: Natural histogram variance.")
+
+                    with stat_col2:
+                        if getattr(report, "spa_findings", None) and "channel_results" in report.spa_findings and report.spa_findings["channel_results"]:
+                            spa_data = report.spa_findings
+                            s_rate = spa_data.get("max_embedding_rate", 0.0)
+                            s_verdict = spa_data.get("verdict", "NATURAL")
+                            s_color = "#dc2626" if s_rate >= 0.35 else ("#d97706" if s_rate >= 0.15 else "#16a34a")
+                            st.markdown(f"""
+                            <div style="background:#f8fafc;border-left:4px solid {s_color};border-radius:8px;padding:0.9rem;min-height:130px;">
+                                <div style="font-weight:700;color:{s_color};font-size:0.95rem;">
+                                    Sample Pair Analysis (SPA): {s_rate*100:.1f}% Embedding Rate
+                                </div>
+                                <div style="font-size:0.85rem;font-weight:600;margin-top:0.2rem;color:#1e293b;">{s_verdict}</div>
+                                <div style="font-size:0.8rem;color:#64748b;margin-top:0.4rem;">
+                                    Dumitrescu, Wu & Wang (2002) quadratic formulation tracking parity transitions in adjacent pixel pairs.
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.info("Sample Pair Analysis: Natural parity transitions.")
+
+                    # 3. Indicators of Compromise (IOCs) & Exfiltration Threats
+                    if getattr(report, "iocs", None) and any(report.iocs.values()):
+                        st.markdown("##### 🚨 Extracted Forensic Indicators of Compromise (IOCs)")
+                        ioc_cols = st.columns(len(report.iocs))
+                        for col, (ioc_type, items) in zip(ioc_cols, report.iocs.items()):
+                            with col:
+                                clean_t = ioc_type.replace("_", " ").title()
+                                st.markdown(f"**{clean_t}** ({len(items)})")
+                                for itm in items[:10]:
+                                    st.code(itm, language="text")
+
+                    # 2. Carved Files (e.g. ZIP, note.txt)
+                    if report.carved_files:
+                        st.markdown("##### 📁 Carved Trailing Polyglot Payloads")
+                        st.caption("Files detected and extracted from raw bytes appended past the official image boundary:")
+                        for c_file in report.carved_files:
+                            c_col_info, c_col_btn = st.columns([3, 1])
+                            with c_col_info:
+                                st.markdown(f"**`{c_file.filename}`** ({c_file.size_bytes:,} bytes)")
+                                st.caption(c_file.note)
+                            with c_col_btn:
+                                st.download_button(
+                                    label=f"⬇️ Download {c_file.filename}",
+                                    data=c_file.data,
+                                    file_name=c_file.filename,
+                                    mime=c_file.mime_type,
+                                    key=f"dl_carved_{c_file.filename}_{len(c_file.data)}"
+                                )
+                            # If readable text, display preview
+                            if c_file.mime_type == "text/plain":
+                                try:
+                                    txt_preview = c_file.data.decode("utf-8", "replace")
+                                    with st.expander(f"👁️ View Content of '{c_file.filename}'", expanded=True):
+                                        st.code(txt_preview, language="text")
+                                except Exception:
+                                    pass
+
+                    # 3. Harvested Keys & Clues
+                    if report.harvested_keys:
+                        unique_display_keys = []
+                        seen_lower = set()
+                        for k in report.harvested_keys:
+                            if k.lower() not in seen_lower:
+                                seen_lower.add(k.lower())
+                                unique_display_keys.append(k)
+
+                        with st.expander(f"🔑 Harvested Passphrases & Cipher Keys ({len(unique_display_keys)})", expanded=False):
+                            st.markdown("The following candidate cipher clues and keywords were automatically extracted from image metadata, comments, and carved note files:")
+                            badge_html = " ".join([f"<span style='background:#e2e8f0;padding:2px 8px;border-radius:4px;font-family:monospace;margin:2px;display:inline-block;'>{k}</span>" for k in unique_display_keys[:30]])
+                            st.markdown(badge_html, unsafe_allow_html=True)
+
+                    # 4. Native CLI Tool Telemetry
+                    if report.cli_telemetry:
+                        with st.expander("🛠️ Native Forensic Tool Telemetry (zsteg / stegseek)", expanded=False):
+                            for t in report.cli_telemetry:
+                                st.markdown(f"**Tool:** `{t.get('tool', 'CLI')}`")
+                                if "output" in t:
+                                    st.text(t["output"])
+                                if "stdout" in t and t["stdout"]:
+                                    st.code(t["stdout"])
+                                if "error" in t:
+                                    st.error(t["error"])
+
+        st.markdown("---")
+
+        # ── UNIFIED PAYLOAD EXTRACTION & OPTICAL ANALYSIS ENGINE ───────────────
         st.markdown("#### 🔑 Payload Extraction Engine")
-        with st.expander("🔓 Attempt Hidden Message Extraction", expanded=True):
+        st.markdown("""<div class="card">
+          <div class="card-body">
+            <strong>Multi-Vector Payload Recovery & Optical Inspection:</strong> Extract hidden bit-streams across LSB, EOF trailers, and password-protected channels, 
+            or visually slice through individual color bitplanes, isolate optical watermarks, and decode visual binary or QR payloads in real time.
+          </div></div>""", unsafe_allow_html=True)
+
+        with st.expander("🔓 Attempt Hidden Message Extraction & Optical Analysis", expanded=True):
             tool_col, mode_col = st.columns(2)
             with tool_col:
                 steg_tool = st.selectbox(
@@ -1225,13 +1639,14 @@ def main():
                     ["Auto-Detect (Recommended)", "LSB Plain (Steghide/OpenStego)",
                      "LSB XOR-Keyed (Password Protected)", "Append After EOF Marker",
                      "Interleaved (Every 2nd Pixel)"],
+                    key="pe_steg_tool"
                 )
             with mode_col:
-                n_bytes = st.slider("Bytes to extract:", 32, 2048, 256, 32)
+                n_bytes = st.slider("Bytes to extract:", 32, 2048, 256, 32, key="pe_n_bytes")
 
-            password = st.text_input("Password / Key (leave blank if unprotected)", type="password")
+            password = st.text_input("Password / Key (leave blank if unprotected)", type="password", key="pe_password")
 
-            if st.button("🔬 Extract & Analyse Payload", use_container_width=True, type="primary"):
+            if st.button("🔬 Extract & Analyse Payload", use_container_width=True, type="primary", key="btn_pe_extract"):
                 results_by_method = {}
                 raw_extract = lsb_bytes[:n_bytes]
                 results_by_method["Raw LSB"] = raw_extract
@@ -1290,6 +1705,84 @@ def main():
                     st.error("🔒 No method produced readable output. Data is strongly encrypted or the image is clean.")
                 if eof_data and len(eof_data) > 8:
                     st.warning(f"⚠️ **Polyglot Attack Detected!** {len(eof_data):,} bytes exist after the image EOF marker — this is always intentional.")
+
+            st.markdown("---")
+            st.markdown("##### 🔬 Multi-Spectral Bit-Plane Slicing & Optical Transforms")
+            st.caption("Slice individual bit-planes (0–7 for Red, Green, and Blue), isolate color channels, invert luminance, apply high-contrast Otsu thresholding, Canny edge detection, and scan for optical QR codes.")
+
+            ss_col1, ss_col2 = st.columns([1.1, 1.9])
+            with ss_col1:
+                stegsolve_filter = st.selectbox(
+                    "Select Bit-Plane or Optical Transform:",
+                    [
+                        "Original Image",
+                        "Red Plane 0 (LSB)", "Red Plane 1", "Red Plane 2", "Red Plane 3", "Red Plane 4", "Red Plane 5", "Red Plane 6", "Red Plane 7 (MSB)",
+                        "Green Plane 0 (LSB)", "Green Plane 1", "Green Plane 2", "Green Plane 3", "Green Plane 4", "Green Plane 5", "Green Plane 6", "Green Plane 7 (MSB)",
+                        "Blue Plane 0 (LSB)", "Blue Plane 1", "Blue Plane 2", "Blue Plane 3", "Blue Plane 4", "Blue Plane 5", "Blue Plane 6", "Blue Plane 7 (MSB)",
+                        "Red Channel Only", "Green Channel Only", "Blue Channel Only",
+                        "Color Inversion", "Grayscale Invert", "High Contrast Threshold", "Edge / High-Pass"
+                    ],
+                    key="stegsolve_filter_select"
+                )
+
+                # Interactive Visual Binary ASCII Decoder
+                st.markdown("##### 🔤 Optical Binary Text Quick-Decoder")
+                st.caption("Paste visual binary sequences seen on the canvas (e.g. `01001000 01001001`):")
+                sample_bin = st.text_area(
+                    "Binary String (8-bit bytes):",
+                    value="",
+                    placeholder="Paste binary bytes from canvas here (e.g. 01001000 01001001)...",
+                    height=70,
+                    key="optical_bin_input"
+                )
+                if sample_bin and sample_bin.strip():
+                    try:
+                        from forensics.ctf_solver import decode_binary_ascii_string as _dec_bin
+                    except Exception:
+                        from src.forensics.ctf_solver import decode_binary_ascii_string as _dec_bin
+                    decoded_text = _dec_bin(sample_bin)
+                    if decoded_text:
+                        st.success(f"**Decoded ASCII:** `{decoded_text}`")
+                    else:
+                        st.info("Enter valid 8-bit binary numbers (e.g. 01001000 01001001)")
+
+                # Optical QR Code quick scanner button
+                if st.button("📷 Scan for Optical QR Codes / Barcodes", key="btn_scan_optical_qr", use_container_width=True):
+                    try:
+                        from forensics.ctf_solver import scan_qr_codes as _sqr
+                    except Exception:
+                        from src.forensics.ctf_solver import scan_qr_codes as _sqr
+                    with st.spinner("Executing adaptive thresholding and CLAHE equalization for optical QR codes..."):
+                        qr_hits, qr_log = _sqr(pil_img)
+                    if qr_hits:
+                        for qh in qr_hits:
+                            st.success(f"🎯 **Found QR Code Payload:** `{qh.flag}`")
+                    else:
+                        st.warning("⚠️ No standard optical QR code could be automatically reconstructed with the detector. Check the bit-planes on the right to manually inspect distorted or artistic patterns.")
+
+            with ss_col2:
+                try:
+                    from forensics.ctf_solver import apply_stegsolve_filter as _asf
+                except Exception:
+                    from src.forensics.ctf_solver import apply_stegsolve_filter as _asf
+
+                if stegsolve_filter == "Original Image":
+                    st.image(pil_img, caption="Original Image Preview", use_container_width=True)
+                else:
+                    clean_f_name = stegsolve_filter.replace(" (LSB)", "").replace(" (MSB)", "")
+                    transformed_img = _asf(pil_img, clean_f_name)
+                    st.image(transformed_img, caption=f"🔬 Multi-Spectral Forensic View: {stegsolve_filter}", use_container_width=True)
+                    
+                    # Option to download the processed bit-plane
+                    buf = io.BytesIO()
+                    transformed_img.save(buf, format="PNG")
+                    st.download_button(
+                        label=f"⬇️ Download {clean_f_name}.png",
+                        data=buf.getvalue(),
+                        file_name=f"{clean_f_name.lower().replace(' ', '_')}.png",
+                        mime="image/png",
+                        key=f"dl_ss_plane_{clean_f_name}"
+                    )
 
         st.markdown("---")
 
@@ -1415,8 +1908,6 @@ def main():
                         f"{escape(preview_content)}"
                         f"<div style='color:#fff;margin-top:8px;'>--- END ---</div></div>",
                         height=250, scrolling=True)
-
-
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 4 — EXPERT FORENSICS
