@@ -495,6 +495,7 @@ def main():
     parser.add_argument("--no_gpu",      action="store_true")
     parser.add_argument("--wandb",       action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--resume",      action="store_true", help="Resume from existing checkpoint if available")
+    parser.add_argument("--seed",        type=int,   default=None, help="Random seed for reproducibility or ensembling")
     args = parser.parse_args()
 
     cfg = Config()
@@ -506,6 +507,7 @@ def main():
     if args.clean_dir:  cfg.clean_dir = args.clean_dir
     if args.stego_dir:  cfg.stego_dir = args.stego_dir
     if args.no_gpu:     cfg.use_gpu = False
+    if args.seed:       cfg.seed = args.seed
     cfg.resume = args.resume
     
     # Custom config property for wandb (since it's not in the base config)
